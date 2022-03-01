@@ -1,8 +1,16 @@
 use std::{ffi::CString, io::{Read, Write, Seek, SeekFrom}};
 
-use crate::{filesystem::{FSResult, Info}, common::OSErr};
+use crate::{filesystem::{FSResult, Info}, common::{OSErr, FourCC, four_cc}};
 
 use super::{EmuState, EmuUC, FuncResult, helpers::{ArgReader, UnicornExtras}};
+
+fn get_assumed_type_and_creator_id(name: &str) -> (FourCC, FourCC) {
+	if name.ends_with(".o") {
+		(four_cc(*b"MPLF"), four_cc(*b"CWIE"))
+	} else {
+		(four_cc(*b"TEXT"), four_cc(*b"ttxt"))
+	}
+}
 
 fn fs_close(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let ref_num: u16 = reader.read1(uc)?;
@@ -222,8 +230,8 @@ fn h_open(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 }
 
 fn h_create(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
-	let (volume, dir_id, name): (i16, u32, CString) = reader.pstr().read3(uc)?;
-	info!(target: "files", "HCreate(vol={volume}, dir={dir_id}, name={name:?})");
+	let (volume, dir_id, name, creator, file_type): (i16, u32, CString, FourCC, FourCC) = reader.pstr().read5(uc)?;
+	info!(target: "files", "HCreate(vol={volume}, dir={dir_id}, name={name:?}, creator={creator:?}, type={file_type:?})");
 
 	let name = match name.to_str() {
 		Ok(n) => n,
@@ -245,7 +253,7 @@ fn h_delete(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Fu
 
 fn h_get_f_info(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (volume, dir_id, name, info_ptr): (i16, u32, CString, u32) = reader.pstr().read4(uc)?;
-	info!(target: "files", "HCreate(vol={volume}, dir={dir_id}, name={name:?})");
+	info!(target: "files", "HGetFInfo(vol={volume}, dir={dir_id}, name={name:?})");
 
 	let name = match name.to_str() {
 		Ok(n) => n,
@@ -254,7 +262,11 @@ fn h_get_f_info(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) ->
 
 	match state.filesystem.get_subnode_info(dir_id, name) {
 		FSResult::Ok(_) => {
-			uc.mem_write(info_ptr.into(), b"TEXTTEXT\0\0\0\0\0\0\0\0")?;
+			let (ty, creator) = get_assumed_type_and_creator_id(name);
+			uc.write_u32(info_ptr, ty.0)?;
+			uc.write_u32(info_ptr + 4, creator.0)?;
+			uc.write_u32(info_ptr + 8, 0)?;
+			uc.write_u32(info_ptr + 12, 0)?;
 			Ok(Some(0))
 		}
 		FSResult::Err(e) => Ok(Some(e.to_u32()))
@@ -281,6 +293,31 @@ fn fs_make_fs_spec(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader)
 			} else {
 				Ok(Some(OSErr::FileNotFound.to_u32()))
 			}
+		}
+		FSResult::Err(e) => Ok(Some(e.to_u32()))
+	}
+}
+
+fn fsp_open_df(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (spec_ptr, permission, ref_num_ptr): (u32, i8, u32) = reader.read3(uc)?;
+	let volume = uc.read_u16(spec_ptr)?;
+	let dir_id = uc.read_u32(spec_ptr + 2)?;
+	let name = uc.read_pascal_string(spec_ptr + 6)?;
+
+	info!(target: "files", "FSpOpenDF(vol={volume}, dir={dir_id}, name={name:?}, permission={permission})");
+
+	let name = match name.to_str() {
+		Ok(n) => n,
+		Err(_) => return Ok(Some(OSErr::BadName.to_u32()))
+	};
+
+	match state.filesystem.h_open(dir_id, name, permission) {
+		FSResult::Ok(file) => {
+			let handle = state.next_file_handle;
+			state.next_file_handle += 1;
+			state.file_handles.insert(handle, file);
+			uc.write_u16(ref_num_ptr, handle)?;
+			Ok(Some(0))
 		}
 		FSResult::Err(e) => Ok(Some(e.to_u32()))
 	}
@@ -328,6 +365,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("HDelete", h_delete);
 	state.install_shim_function("HGetFInfo", h_get_f_info);
 	state.install_shim_function("FSMakeFSSpec", fs_make_fs_spec);
+	state.install_shim_function("FSpOpenDF", fsp_open_df);
 
 	// not actually in Files.h but we'll let it slide.
 	state.install_shim_function("MakeResolvedFSSpec", make_resolved_fs_spec);

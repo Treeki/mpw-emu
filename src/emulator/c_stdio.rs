@@ -37,6 +37,8 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 	let mut output = Vec::new();
 	let mut iter = format.iter();
 
+	trace!(target: "stdio", "printf: {:?}", CString::new(format));
+
 	loop {
 		let mut ch = match iter.next() {
 			Some(c) => *c, None => break
@@ -117,15 +119,24 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 		// finally produce the actual thing
 		let what = match ch {
 			b's' => {
-				let mut inner_string = arg_reader.read1::<CString>(uc)?.into_bytes();
+				let addr: u32 = arg_reader.read1(uc)?;
+				let mut inner_string = if addr == 0 {
+					b"(null)".to_vec()
+				} else {
+					uc.read_c_string(addr)?.into_bytes()
+				};
 				if let Some(prec) = precision {
 					inner_string.truncate(prec as usize);
 				}
 				inner_string
 			}
 			b'd' => {
-				let num: u32 = arg_reader.read1(uc)?;
+				let num: i32 = arg_reader.read1(uc)?;
 				format!("{}", num).into_bytes()
+			}
+			b'X' => {
+				let num: u32 = arg_reader.read1(uc)?;
+				format!("{:X}", num).into_bytes()
 			}
 			_ => format!("UNIMPLEMENTED!! {}", ch as char).into_bytes()
 		};

@@ -13,10 +13,10 @@ An extremely ridiculous weekend project that tries to do user-mode emulation of 
 
 - Implement the missing relocations for the PEF linker
 - Implement more of the C standard library
+  - Figure out a way to make printf better (maybe fork one of the existing Rust implementations)
 - Implement more of the Macintosh Toolbox(tm)
 - Make the file system bridge more robust
-  - Does my half-assed code to bridge into the classic Mac file system API work on a Unix host?
-  - Use file extensions to pick a type/creator code rather than assuming `TEXT` (this would probably make MWDumpPPC work!)
+  - Improve detection of type/detector codes
 - Check if I can make loading files more robust
   - Should I try to support packed formats other than MacBinary?
   - Using `file/..namedfork/rsrc` might let me load raw files on MacOS
