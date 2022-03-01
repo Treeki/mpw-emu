@@ -130,7 +130,7 @@ impl Heap {
 
 				if amount_to_copy < new_size {
 					for i in amount_to_copy..new_size {
-						uc.write_u8(i, 0)?;
+						uc.write_u8(new_backing_ptr + i, 0)?;
 					}
 				}
 
