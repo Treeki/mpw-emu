@@ -12,6 +12,7 @@ use crate::linker;
 use crate::pef;
 use crate::resources::Resources;
 
+mod c_ctype;
 mod c_stdio;
 mod c_stdlib;
 mod c_string;
@@ -32,6 +33,7 @@ type LibraryShim = fn(&mut EmuUC, &mut EmuState, &mut helpers::ArgReader) -> UcR
 
 struct ShimSymbol {
 	shim_address: u32,
+	class: pef::SymbolClass,
 	name: String,
 	func: Option<LibraryShim>
 }
@@ -43,6 +45,7 @@ struct EmuState {
 	resources: Rc<Resources>,
 	loaded_resources: HashMap<(FourCC, i16), u32>,
 	env_var_map: HashMap<String, u32>,
+	strtok_state: u32,
 	stdio_files: HashMap<u32, c_stdio::CFile>,
 	file_handles: HashMap<u16, std::fs::File>,
 	next_file_handle: u16,
@@ -60,6 +63,7 @@ impl EmuState {
 			resources,
 			loaded_resources: HashMap::new(),
 			env_var_map: HashMap::new(),
+			strtok_state: 0,
 			stdio_files: HashMap::new(),
 			file_handles: HashMap::new(),
 			next_file_handle: 1,
@@ -75,6 +79,7 @@ impl EmuState {
 
 			state.imports.push(ShimSymbol {
 				shim_address: *shim_address,
+				class: import.class,
 				name: import.name.clone(),
 				func: None
 			});
@@ -183,6 +188,7 @@ pub fn emulate(exe: &linker::Executable, resources: Rc<Resources>, args: &[Strin
 		c_stdlib::setup_environment(&mut uc, &mut state, args, env_vars)?;
 
 		// inject shim functions
+		c_ctype::install_shims(&mut state);
 		c_stdio::install_shims(&mut state);
 		c_stdlib::install_shims(&mut state);
 		c_string::install_shims(&mut state);
@@ -194,6 +200,12 @@ pub fn emulate(exe: &linker::Executable, resources: Rc<Resources>, args: &[Strin
 		mac_quickdraw::install_shims(&mut state);
 		mac_resources::install_shims(&mut state);
 		mac_text_utils::install_shims(&mut state);
+
+		for symbol in &state.imports {
+			if symbol.func.is_none() && symbol.class == pef::SymbolClass::TVect {
+				warn!(target: "emulator", "Executable imports unimplemented function: {}", symbol.name);
+			}
+		}
 	}
 
 	if exe.init_vector > 0 {

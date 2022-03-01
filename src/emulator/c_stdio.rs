@@ -1,6 +1,6 @@
-use std::{ffi::CString, io::Write};
+use std::{ffi::CString, io::{Write, Seek}};
 
-use crate::mac_roman::decode_mac_roman;
+use crate::mac_roman;
 
 use super::{EmuState, EmuUC, FuncResult, UcResult, helpers::{ArgReader, UnicornExtras}};
 
@@ -30,6 +30,24 @@ impl CFile {
 			Err(e) => {
 				error!(target: "stdio", "failed to write to file: {e:?}");
 				0
+			}
+		}
+	}
+
+	fn tell(&mut self) -> u32 {
+		match self {
+			CFile::File(f) => {
+				match f.stream_position() {
+					Ok(pos) => pos as u32,
+					Err(e) => {
+						error!(target: "stdio", "failed to get position of file");
+						0xFFFFFFFF
+					}
+				}
+			},
+			_ => {
+				warn!(target: "stdio", "running ftell() on stdout or stderr");
+				0xFFFFFFFF
 			}
 		}
 	}
@@ -159,6 +177,19 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 	Ok(output)
 }
 
+fn fclose(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let file: u32 = reader.read1(uc)?;
+
+	if state.stdio_files.contains_key(&file) {
+		state.stdio_files.remove(&file);
+		Ok(Some(0))
+	} else {
+		warn!(target: "stdio", "fclose() on invalid file {file:08X}");
+		// TODO: this should be EOF, check what it is in MSL
+		Ok(Some(0xFFFFFFFF))
+	}
+}
+
 fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (file, format): (u32, CString) = reader.read2(uc)?;
 	trace!(target: "stdio", "fprintf({file:08X}, {format:?}, ...)");
@@ -167,7 +198,7 @@ fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
 			if f.is_terminal() {
-				Ok(Some(f.generic_write(&decode_mac_roman(&output, true))))
+				Ok(Some(f.generic_write(&mac_roman::decode_buffer(&output, true))))
 			} else {
 				Ok(Some(f.generic_write(&output)))
 			}
@@ -178,6 +209,13 @@ fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 			Ok(Some(0))
 		}
 	}
+}
+
+fn printf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (file, format): (u32, CString) = reader.read2(uc)?;
+	trace!(target: "stdio", "printf({file:08X}, {format:?}, ...)");
+	let output = internal_printf(uc, format.as_bytes(), reader)?;
+	Ok(Some(CFile::StdOut.generic_write(&mac_roman::decode_buffer(&output, true))))
 }
 
 fn sprintf(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -198,7 +236,7 @@ fn vfprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Fun
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
 			if f.is_terminal() {
-				Ok(Some(f.generic_write(&decode_mac_roman(&output, true))))
+				Ok(Some(f.generic_write(&mac_roman::decode_buffer(&output, true))))
 			} else {
 				Ok(Some(f.generic_write(&output)))
 			}
@@ -218,7 +256,7 @@ fn fputs(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncRe
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
 			if f.is_terminal() {
-				Ok(Some(f.generic_write(&decode_mac_roman(&output, true))))
+				Ok(Some(f.generic_write(&mac_roman::decode_buffer(&output, true))))
 			} else {
 				Ok(Some(f.generic_write(&output)))
 			}
@@ -238,7 +276,7 @@ fn fwrite(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
 			if f.is_terminal() {
-				Ok(Some(f.generic_write(&decode_mac_roman(&output, true)) / size))
+				Ok(Some(f.generic_write(&mac_roman::decode_buffer(&output, true)) / size))
 			} else {
 				Ok(Some(f.generic_write(&output) / size))
 			}
@@ -249,6 +287,27 @@ fn fwrite(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 			Ok(Some(0))
 		}
 	}
+}
+
+fn ftell(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let file: u32 = reader.read1(uc)?;
+
+	match state.stdio_files.get_mut(&file) {
+		Some(f) => {
+			Ok(Some(f.tell()))
+		}
+		None => {
+			warn!(target: "stdio", "ftell() is telling from invalid file {file:08X}");
+			// set errno later?
+			Ok(Some(0xFFFFFFFF))
+		}
+	}
+}
+
+fn putchar(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let ch: u8 = reader.read1(uc)?;
+	print!("{}", mac_roman::decode_char(ch, true));
+	Ok(Some(ch.into()))
 }
 
 pub(super) fn install_shims(state: &mut EmuState) {
@@ -263,13 +322,13 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// tmpfile
 	// setbuf
 	// setvbuf
-	// fclose
+	state.install_shim_function("fclose", fclose);
 	// fflush
 	// fopen
 	// freopen
 	state.install_shim_function("fprintf", fprintf);
 	// fscanf
-	// printf
+	state.install_shim_function("printf", printf);
 	// scanf
 	state.install_shim_function("sprintf", sprintf);
 	// sscanf
@@ -286,7 +345,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// fread
 	state.install_shim_function("fwrite", fwrite);
 	// fgetpos
-	// ftell
+	state.install_shim_function("ftell", ftell);
 	// fsetpos
 	// fseek
 	// rewind
@@ -295,7 +354,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// getc
 	// putc
 	// getchar
-	// putchar
+	state.install_shim_function("putchar", putchar);
 	// feof
 	// ferror
 }

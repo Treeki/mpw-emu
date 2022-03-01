@@ -1,3 +1,5 @@
+use std::ffi::CString;
+
 use super::{EmuState, EmuUC, FuncResult, helpers::{ArgReader, UnicornExtras}};
 
 fn memset(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -6,6 +8,18 @@ fn memset(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 		uc.write_u8(ptr + i, byte)?;
 	}
 	Ok(Some(ptr))
+}
+
+fn memcmp(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (s1, s2, len): (u32, u32, u32) = reader.read3(uc)?;
+	for i in 0..len {
+		let b1 = uc.read_u8(s1 + i)? as i32;
+		let b2 = uc.read_u8(s2 + i)? as i32;
+		if b1 != b2 {
+			return Ok(Some((b1 - b2) as u32));
+		}
+	}
+	Ok(Some(0))
 }
 
 fn memcpy(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -42,6 +56,22 @@ fn strncpy(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Fun
 		let byte = if reached_null { 0 } else { uc.read_u8(src + i)? };
 		uc.write_u8(dst + i, byte)?;
 		reached_null = byte == 0;
+	}
+	Ok(Some(dst))
+}
+
+fn strcat(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (dst, src): (u32, u32) = reader.read2(uc)?;
+	// find the length of dest
+	let mut len = 0;
+	while uc.read_u8(dst + len)? != 0 {
+		len += 1;
+	}
+	// now copy src over
+	for i in 0..u32::MAX {
+		let byte = uc.read_u8(src + i)?;
+		uc.write_u8(dst + len + i, byte)?;
+		if byte == 0 { break; }
 	}
 	Ok(Some(dst))
 }
@@ -89,17 +119,50 @@ fn strrchr(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Fun
 	Ok(Some(best))
 }
 
+fn strtok(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (mut ptr, sep): (u32, CString) = reader.read2(uc)?;
+	if ptr == 0 {
+		ptr = state.strtok_state;
+		if ptr == 0 {
+			// no more tokens remain
+			return Ok(Some(0));
+		}
+	}
+
+	// find first separator
+	for i in 0..u32::MAX {
+		let ch = uc.read_u8(ptr + i)?;
+		if sep.as_bytes().contains(&ch) {
+			// delimiter found
+			state.strtok_state = ptr + i + 1;
+			uc.write_u8(ptr + i, 0)?;
+			return Ok(Some(ptr));
+		} else if ch == 0 {
+			// we reached the end
+			state.strtok_state = 0;
+			if i == 0 {
+				// token was empty
+				return Ok(Some(0));
+			} else {
+				return Ok(Some(ptr));
+			}
+		}
+	}
+
+	unreachable!()
+}
+
 pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("memset", memset);
 	// memchr
-	// memcmp
+	state.install_shim_function("memcmp", memcmp);
 	state.install_shim_function("memcpy", memcpy);
 	// memmove
 
 	state.install_shim_function("strlen", strlen);
 	state.install_shim_function("strcpy", strcpy);
 	state.install_shim_function("strncpy", strncpy);
-	// strcat
+	state.install_shim_function("strcat", strcat);
 	// strncat
 	state.install_shim_function("strcmp", strcmp);
 	// strncmp
@@ -110,7 +173,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// strpbrk
 	// strspn
 	// strcspn
-	// strtok
+	state.install_shim_function("strtok", strtok);
 	// strstr
 	// strerror
 	// strcasecmp
