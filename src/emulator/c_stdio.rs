@@ -169,7 +169,7 @@ fn cr_to_lf(data: &mut [u8]) {
 
 fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (file, format): (u32, CString) = reader.read2(uc)?;
-	trace!(target: "stdio", "fprintf({file:08X}, {:?}, ...)", format);
+	trace!(target: "stdio", "fprintf({file:08X}, {format:?}, ...)");
 	let mut output = internal_printf(uc, format.as_bytes(), reader)?;
 
 	match state.stdio_files.get_mut(&file) {
@@ -189,11 +189,32 @@ fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 
 fn sprintf(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (buffer, format): (u32, CString) = reader.read2(uc)?;
-	trace!(target: "stdio", "sprintf({buffer:08X}, {:?}, ...)", format);
+	trace!(target: "stdio", "sprintf({buffer:08X}, {format:?}, ...)");
 	let output = internal_printf(uc, format.as_bytes(), reader)?;
 
 	uc.write_c_string(buffer, &output)?;
 	Ok(Some(output.len() as u32))
+}
+
+fn vfprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (file, format, va_list): (u32, CString, u32) = reader.read3(uc)?;
+	trace!(target: "stdio", "vfprintf({file:08X}, {format:?}, va_list={va_list:08X})");
+	let mut va_reader = ArgReader::new_with_va_list(va_list);
+	let mut output = internal_printf(uc, format.as_bytes(), &mut va_reader)?;
+
+	match state.stdio_files.get_mut(&file) {
+		Some(f) => {
+			if f.needs_line_ending_conversion() {
+				cr_to_lf(&mut output);
+			}
+			Ok(Some(f.generic_write(&output)))
+		}
+		None => {
+			warn!(target: "stdio", "vfprintf() is writing to invalid file {file:08X}");
+			// set errno later?
+			Ok(Some(0))
+		}
+	}
 }
 
 fn fputs(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -256,7 +277,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// scanf
 	state.install_shim_function("sprintf", sprintf);
 	// sscanf
-	// vfprintf
+	state.install_shim_function("vfprintf", vfprintf);
 	// vprintf
 	// vsprintf
 	// fgetc

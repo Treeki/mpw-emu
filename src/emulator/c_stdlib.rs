@@ -79,6 +79,54 @@ fn strtol(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 	Ok(Some(num as u32))
 }
 
+fn calloc(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (count, size): (u32, u32) = reader.read2(uc)?;
+	let ptr = state.heap.new_ptr(uc, count * size)?;
+	Ok(Some(ptr))
+}
+
+fn free(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let ptr: u32 = reader.read1(uc)?;
+	if ptr != 0 {
+		state.heap.dispose_ptr(uc, ptr)?;
+	}
+	Ok(None)
+}
+
+fn malloc(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let size: u32 = reader.read1(uc)?;
+	let ptr = state.heap.new_ptr(uc, size)?;
+	Ok(Some(ptr))
+}
+
+fn realloc(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (ptr, new_size): (u32, u32) = reader.read2(uc)?;
+	if ptr != 0 {
+		if state.heap.set_ptr_size(uc, ptr, new_size)? {
+			// resized successfully
+			Ok(Some(ptr))
+		} else {
+			// no dice, we need to allocate a new buffer
+			let new_ptr = state.heap.new_ptr(uc, new_size)?;
+			if new_ptr != 0 {
+				let old_size = state.heap.get_ptr_size(uc, ptr)?;
+				let to_copy = old_size.min(new_size);
+				for i in 0..to_copy {
+					uc.write_u8(new_ptr + i, uc.read_u8(ptr + i)?)?;
+				}
+				state.heap.dispose_ptr(uc, ptr)?;
+				Ok(Some(new_ptr))
+			} else {
+				// failed
+				Ok(Some(0))
+			}
+		}
+	} else {
+		let ptr = state.heap.new_ptr(uc, new_size)?;
+		Ok(Some(ptr))
+	}
+}
+
 fn atexit(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let _func: u32 = reader.read1(uc)?;
 	// Not implemented, but we pretend it is to satisfy the program
@@ -165,10 +213,10 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// strtoull (?)
 	// rand
 	// srand
-    // calloc
-	// free
-	// malloc
-	// realloc
+	state.install_shim_function("calloc", calloc);
+	state.install_shim_function("free", free);
+	state.install_shim_function("malloc", malloc);
+	state.install_shim_function("realloc", realloc);
 	// abort
 	state.install_shim_function("atexit", atexit);
 	state.install_shim_function("exit", exit);

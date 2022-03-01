@@ -8,12 +8,25 @@ use super::{EmuUC, UcResult};
 
 pub(super) struct ArgReader {
 	use_pascal_strings: bool,
-	gpr_id: i32
+	gpr_id: i32,
+	va_list_position: u32
 }
 
 impl ArgReader {
 	pub fn new() -> Self {
-		ArgReader { use_pascal_strings: false, gpr_id: RegisterPPC::GPR3.into() }
+		ArgReader {
+			use_pascal_strings: false,
+			gpr_id: RegisterPPC::GPR3.into(),
+			va_list_position: 0
+		}
+	}
+
+	pub fn new_with_va_list(va_list: u32) -> Self {
+		ArgReader {
+			use_pascal_strings: false,
+			gpr_id: -1,
+			va_list_position: va_list
+		}
 	}
 
 	pub fn pstr(&mut self) -> &mut Self {
@@ -71,9 +84,15 @@ impl ArgReader {
 	}
 
 	pub fn read_gpr(&mut self, uc: &EmuUC) -> UcResult<u32> {
-		let value = uc.reg_read(self.gpr_id)? as u32;
-		self.gpr_id += 1;
-		Ok(value)
+		if self.gpr_id < 0 {
+			let value = uc.read_u32(self.va_list_position)?;
+			self.va_list_position += 4;
+			Ok(value)
+		} else {
+			let value = uc.reg_read(self.gpr_id)? as u32;
+			self.gpr_id += 1;
+			Ok(value)
+		}
 	}
 }
 
@@ -81,6 +100,11 @@ pub(super) trait ReadableArg {
 	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, pstr_flag: bool) -> UcResult<Self> where Self: Sized;
 }
 
+impl ReadableArg for bool {
+	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, _pstr_flag: bool) -> UcResult<Self> {
+		Ok(reader.read_gpr(uc)? != 0)
+	}
+}
 impl ReadableArg for u8 {
 	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, _pstr_flag: bool) -> UcResult<Self> {
 		Ok((reader.read_gpr(uc)? & 0xFF) as u8)

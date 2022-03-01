@@ -1,5 +1,20 @@
 use std::fmt;
 use binread::BinRead;
+use chrono::{prelude::*, Duration};
+
+const UNIX_TO_MAC_DELTA: i64 = 2082844800;
+
+fn get_mac_epoch() -> DateTime<Local> {
+	Local.ymd(1904, 1, 1).and_hms(0, 0, 0)
+}
+
+pub fn parse_mac_time(time: u32) -> DateTime<Local> {
+	get_mac_epoch() + Duration::seconds(time.into())
+}
+
+pub fn get_mac_time(dt: DateTime<Local>) -> u32 {
+	(dt - get_mac_epoch()).num_seconds() as u32
+}
 
 #[derive(BinRead, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct FourCC(pub u32);
