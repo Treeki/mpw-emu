@@ -139,7 +139,11 @@ impl FileSystem {
 	}
 
 	pub fn get_subnode_info(&self, parent_id: u32, name: &str) -> FSResult<Info> {
-		let mut path = self.get_path_for_node_id(parent_id).expect("directory id must exist");
+		let mut path = if parent_id == 0 {
+			std::env::current_dir().expect("must be able to get the current directory")
+		} else {
+			self.get_path_for_node_id(parent_id).expect("directory id must exist")
+		};
 		path.push(name);
 
 		if path.exists() {

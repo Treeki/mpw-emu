@@ -37,8 +37,6 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 	let mut output = Vec::new();
 	let mut iter = format.iter();
 
-	trace!(target: "stdio", "printf: {:?}", CString::new(format));
-
 	loop {
 		let mut ch = match iter.next() {
 			Some(c) => *c, None => break
@@ -171,6 +169,7 @@ fn cr_to_lf(data: &mut [u8]) {
 
 fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (file, format): (u32, CString) = reader.read2(uc)?;
+	trace!(target: "stdio", "fprintf({file:08X}, {:?}, ...)", format);
 	let mut output = internal_printf(uc, format.as_bytes(), reader)?;
 
 	match state.stdio_files.get_mut(&file) {
@@ -181,6 +180,7 @@ fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 			Ok(Some(f.generic_write(&output)))
 		}
 		None => {
+			warn!(target: "stdio", "fprintf() is writing to invalid file {file:08X}");
 			// set errno later?
 			Ok(Some(0))
 		}
@@ -189,10 +189,30 @@ fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 
 fn sprintf(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (buffer, format): (u32, CString) = reader.read2(uc)?;
+	trace!(target: "stdio", "sprintf({buffer:08X}, {:?}, ...)", format);
 	let output = internal_printf(uc, format.as_bytes(), reader)?;
 
 	uc.write_c_string(buffer, &output)?;
 	Ok(Some(output.len() as u32))
+}
+
+fn fputs(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (s, file): (CString, u32) = reader.read2(uc)?;
+	let mut output = s.into_bytes();
+
+	match state.stdio_files.get_mut(&file) {
+		Some(f) => {
+			if f.needs_line_ending_conversion() {
+				cr_to_lf(&mut output);
+			}
+			Ok(Some(f.generic_write(&output)))
+		}
+		None => {
+			warn!(target: "stdio", "fputs() is writing to invalid file {file:08X}");
+			// set errno later?
+			Ok(Some(0))
+		}
+	}
 }
 
 fn fwrite(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -207,6 +227,7 @@ fn fwrite(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 			Ok(Some(f.generic_write(&output) / size))
 		}
 		None => {
+			warn!(target: "stdio", "fwrite() is writing to invalid file {file:08X}");
 			// set errno later?
 			Ok(Some(0))
 		}
@@ -241,7 +262,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// fgetc
 	// fgets
 	// fputc
-	// fputs
+	state.install_shim_function("fputs", fputs);
 	// gets
 	// puts
 	// ungetc

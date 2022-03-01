@@ -116,6 +116,14 @@ fn signal(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 	Ok(Some(0))
 }
 
+fn setjmp(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let env: u32 = reader.read1(uc)?;
+
+	info!(target: "stdlib", "setjmp(env={env:08X})");
+
+	Ok(Some(0))
+}
+
 pub(super) fn setup_environment(uc: &mut EmuUC, state: &mut EmuState, args: &[String], env_vars: &[(String, String)]) -> UcResult<()> {
 	// Environment Variables
 	for (name, value) in env_vars {
@@ -147,7 +155,7 @@ pub(super) fn setup_environment(uc: &mut EmuUC, state: &mut EmuState, args: &[St
 }
 
 pub(super) fn install_shims(state: &mut EmuState) {
-    // atof
+	// atof
 	state.install_shim_function("atoi", atoi);
 	state.install_shim_function("atol", atoi);
 	// strtod
@@ -178,7 +186,10 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// mbstowcs
 	// wcstombs
 
-	// This isn't actually in signal.h, but I didn't feel like creating
+	// This isn't actually in stdlib.h, but I didn't feel like creating
 	// c_signal.rs just for one stub. Fight me.
 	state.install_shim_function("signal", signal);
+
+	// ... Same for setjmp.h.
+	state.install_shim_function("__setjmp", setjmp);
 }

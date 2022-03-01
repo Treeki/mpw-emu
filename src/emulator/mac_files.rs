@@ -1,5 +1,11 @@
 use std::{ffi::CString, io::{Read, Write, Seek, SeekFrom}};
 
+const ATTRIB_LOCKED: u8 = 1;
+const ATTRIB_RESOURCE_FORK_OPEN: u8 = 4;
+const ATTRIB_DATA_FORK_OPEN: u8 = 8;
+const ATTRIB_DIRECTORY: u8 = 0x10;
+const ATTRIB_ANY_FORK_OPEN: u8 = 0x80;
+
 use crate::{filesystem::{FSResult, Info}, common::{OSErr, FourCC, four_cc}};
 
 use super::{EmuState, EmuUC, FuncResult, helpers::{ArgReader, UnicornExtras}};
@@ -164,7 +170,7 @@ fn pb_get_cat_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgRe
 
 		match state.filesystem.get_subnode_info(dir_id, &name) {
 			FSResult::Ok(Info::Directory { id, .. }) => {
-				uc.write_u8(pb + 0x1E, 0x10)?; // ioFlAttrib
+				uc.write_u8(pb + 0x1E, ATTRIB_DIRECTORY)?; // ioFlAttrib
 				uc.write_u32(pb + 0x30, id)?; // ioDrDirID
 				Ok(Some(0))
 			}
@@ -187,10 +193,9 @@ fn pb_get_cat_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgRe
 					let name = name.unwrap();
 					uc.write_pascal_string(name_ptr, name.as_bytes())?;
 				}
-				uc.write_u8(pb + 0x1E, 0x10)?; // ioFlAttrib
+				uc.write_u8(pb + 0x1E, ATTRIB_DIRECTORY)?; // ioFlAttrib
 				uc.write_u32(pb + 0x30, id)?; // ioDrDirID
 				uc.write_u32(pb + 0x64, parent_id)?; // ioDrParID
-				uc.write_u8(pb + 0x1E, 0x10)?; // ioFlAttrib
 				Ok(Some(0))
 			}
 			FSResult::Ok(Info::File { parent_id, name }) => {
@@ -201,6 +206,37 @@ fn pb_get_cat_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgRe
 				uc.write_u8(pb + 0x1E, 0)?; // ioFlAttrib
 				uc.write_u32(pb + 0x30, 0)?; // ioDirID
 				uc.write_u32(pb + 0x64, parent_id)?; // ioFlParID
+				Ok(Some(0))
+			}
+			FSResult::Err(e) => Ok(Some(e.to_u32()))
+		}
+	}
+}
+
+fn pb_h_get_f_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let pb: u32 = reader.read1(uc)?;
+
+	// this is HParamBlockRec (HFileParam)
+	let io_f_dir_index = uc.read_i16(pb + 0x1C)?;
+	if io_f_dir_index > 0 {
+		// this does a lookup by index in the dir
+		panic!("not implemented lol");
+	} else {
+		// looks up info about a file or dir, by name
+		let dir_id = uc.read_u32(pb + 0x30)?;
+		let name = uc.read_pascal_string(uc.read_u32(pb + 0x12)?)?;
+		let name = name.to_str().expect("Failed to decode filename");
+		info!(target: "files", "PBHGetFInfoSync is looking up dir {dir_id}, name {name}");
+
+		match state.filesystem.get_subnode_info(dir_id, &name) {
+			FSResult::Ok(Info::Directory { id, .. }) => {
+				uc.write_u8(pb + 0x1E, ATTRIB_DIRECTORY)?; // ioFlAttrib
+				uc.write_u32(pb + 0x30, id)?; // ioDrDirID
+				Ok(Some(0))
+			}
+			FSResult::Ok(Info::File { .. }) => {
+				uc.write_u8(pb + 0x1E, 0)?; // ioFlAttrib
+				uc.write_u32(pb + 0x30, 0)?; // ioDirID
 				Ok(Some(0))
 			}
 			FSResult::Err(e) => Ok(Some(e.to_u32()))
@@ -359,7 +395,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("SetFPos", set_f_pos);
 	state.install_shim_function("PBGetCatInfoSync", pb_get_cat_info_sync);
 	// PBHOpenSync
-	// PBHGetFInfoSync
+	state.install_shim_function("PBHGetFInfoSync", pb_h_get_f_info_sync);
 	state.install_shim_function("HOpen", h_open);
 	state.install_shim_function("HCreate", h_create);
 	state.install_shim_function("HDelete", h_delete);

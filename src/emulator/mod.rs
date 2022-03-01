@@ -39,6 +39,7 @@ struct ShimSymbol {
 struct EmuState {
 	start_time: Instant,
 	imports: Vec<ShimSymbol>,
+	dummy_cursor_handle: Option<u32>,
 	resources: Rc<Resources>,
 	loaded_resources: HashMap<(FourCC, i16), u32>,
 	env_var_map: HashMap<String, u32>,
@@ -55,6 +56,7 @@ impl EmuState {
 		let mut state = EmuState {
 			start_time: Instant::now(),
 			imports: Vec::new(),
+			dummy_cursor_handle: None,
 			resources,
 			loaded_resources: HashMap::new(),
 			env_var_map: HashMap::new(),
