@@ -8,6 +8,7 @@ mod emulator;
 mod filesystem;
 mod linker;
 mod macbinary;
+mod mac_roman;
 mod pef;
 mod resources;
 

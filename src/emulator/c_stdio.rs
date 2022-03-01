@@ -1,5 +1,7 @@
 use std::{ffi::CString, io::Write};
 
+use crate::mac_roman::decode_mac_roman;
+
 use super::{EmuState, EmuUC, FuncResult, UcResult, helpers::{ArgReader, UnicornExtras}};
 
 pub enum CFile {
@@ -9,7 +11,7 @@ pub enum CFile {
 }
 
 impl CFile {
-	fn needs_line_ending_conversion(&self) -> bool {
+	fn is_terminal(&self) -> bool {
 		match self {
 			CFile::StdOut | CFile::StdErr => true,
 			_ => false
@@ -157,27 +159,18 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 	Ok(output)
 }
 
-fn cr_to_lf(data: &mut [u8]) {
-	for c in data.iter_mut() {
-		if *c == b'\r' {
-			*c = b'\n';
-		} else if *c > 127 {
-			*c = b'?'; // for windows stdio
-		}
-	}
-}
-
 fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (file, format): (u32, CString) = reader.read2(uc)?;
 	trace!(target: "stdio", "fprintf({file:08X}, {format:?}, ...)");
-	let mut output = internal_printf(uc, format.as_bytes(), reader)?;
+	let output = internal_printf(uc, format.as_bytes(), reader)?;
 
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
-			if f.needs_line_ending_conversion() {
-				cr_to_lf(&mut output);
+			if f.is_terminal() {
+				Ok(Some(f.generic_write(&decode_mac_roman(&output, true))))
+			} else {
+				Ok(Some(f.generic_write(&output)))
 			}
-			Ok(Some(f.generic_write(&output)))
 		}
 		None => {
 			warn!(target: "stdio", "fprintf() is writing to invalid file {file:08X}");
@@ -200,14 +193,15 @@ fn vfprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Fun
 	let (file, format, va_list): (u32, CString, u32) = reader.read3(uc)?;
 	trace!(target: "stdio", "vfprintf({file:08X}, {format:?}, va_list={va_list:08X})");
 	let mut va_reader = ArgReader::new_with_va_list(va_list);
-	let mut output = internal_printf(uc, format.as_bytes(), &mut va_reader)?;
+	let output = internal_printf(uc, format.as_bytes(), &mut va_reader)?;
 
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
-			if f.needs_line_ending_conversion() {
-				cr_to_lf(&mut output);
+			if f.is_terminal() {
+				Ok(Some(f.generic_write(&decode_mac_roman(&output, true))))
+			} else {
+				Ok(Some(f.generic_write(&output)))
 			}
-			Ok(Some(f.generic_write(&output)))
 		}
 		None => {
 			warn!(target: "stdio", "vfprintf() is writing to invalid file {file:08X}");
@@ -219,14 +213,15 @@ fn vfprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Fun
 
 fn fputs(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (s, file): (CString, u32) = reader.read2(uc)?;
-	let mut output = s.into_bytes();
+	let output = s.into_bytes();
 
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
-			if f.needs_line_ending_conversion() {
-				cr_to_lf(&mut output);
+			if f.is_terminal() {
+				Ok(Some(f.generic_write(&decode_mac_roman(&output, true))))
+			} else {
+				Ok(Some(f.generic_write(&output)))
 			}
-			Ok(Some(f.generic_write(&output)))
 		}
 		None => {
 			warn!(target: "stdio", "fputs() is writing to invalid file {file:08X}");
@@ -238,14 +233,15 @@ fn fputs(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncRe
 
 fn fwrite(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (ptr, size, count, file): (u32, u32, u32, u32) = reader.read4(uc)?;
-	let mut output = uc.mem_read_as_vec(ptr.into(), (size * count) as usize)?;
+	let output = uc.mem_read_as_vec(ptr.into(), (size * count) as usize)?;
 
 	match state.stdio_files.get_mut(&file) {
 		Some(f) => {
-			if f.needs_line_ending_conversion() {
-				cr_to_lf(&mut output);
+			if f.is_terminal() {
+				Ok(Some(f.generic_write(&decode_mac_roman(&output, true)) / size))
+			} else {
+				Ok(Some(f.generic_write(&output) / size))
 			}
-			Ok(Some(f.generic_write(&output) / size))
 		}
 		None => {
 			warn!(target: "stdio", "fwrite() is writing to invalid file {file:08X}");

@@ -2,8 +2,6 @@ use std::fmt;
 use binread::BinRead;
 use chrono::{prelude::*, Duration};
 
-const UNIX_TO_MAC_DELTA: i64 = 2082844800;
-
 fn get_mac_epoch() -> DateTime<Local> {
 	Local.ymd(1904, 1, 1).and_hms(0, 0, 0)
 }
