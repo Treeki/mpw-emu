@@ -136,6 +136,7 @@ impl Executable {
 		let mut next_block = 0;
 		let mut reloc_address = self.data_addr;
 		let mut import_index = 0u32;
+		let mut repeat_info = None;
 
 		while next_block < relocs.data.len() {
 			let block_pos = next_block;
@@ -171,8 +172,13 @@ impl Executable {
 			} else if (block & 0xFE00) == 0x4400 {
 				// RelocTVector12
 				let run_length = (block & 0x1FF) + 1;
-				warn!(target: "linker", "[{block_pos:04X}] UNIMPLEMENTED TVector12 @ {reloc_address:X} (x{run_length})");
-				reloc_address += run_length * 12;
+				trace!(target: "linker", "[{block_pos:04X}] TVector12 @ {reloc_address:X} (x{run_length})");
+				for _ in 0..run_length {
+					self.set_u32(reloc_address, self.code_addr + self.get_u32(reloc_address));
+					reloc_address += 4;
+					self.set_u32(reloc_address, self.data_addr + self.get_u32(reloc_address));
+					reloc_address += 8;
+				}
 			} else if (block & 0xFE00) == 0x4600 {
 				// RelocTVector8
 				let run_length = (block & 0x1FF) + 1;
@@ -186,8 +192,11 @@ impl Executable {
 			} else if (block & 0xFE00) == 0x4800 {
 				// RelocVTable8
 				let run_length = (block & 0x1FF) + 1;
-				warn!(target: "linker", "[{block_pos:04X}] UNIMPLEMENTED VTable8 @ {reloc_address:X} (x{run_length})");
-				reloc_address += run_length * 8;
+				trace!(target: "linker", "[{block_pos:04X}] VTable8 @ {reloc_address:X} (x{run_length})");
+				for _ in 0..run_length {
+					self.set_u32(reloc_address, self.data_addr + self.get_u32(reloc_address));
+					reloc_address += 8;
+				}
 			} else if (block & 0xFE00) == 0x4A00 {
 				// RelocImportRun
 				let run_length = (block & 0x1FF) + 1;
@@ -230,7 +239,22 @@ impl Executable {
 				let block_count = ((block >> 8) & 0xF) + 1;
 				let repeat_count = (block & 0xFF) + 1;
 				let repeat_start = block_pos - (block_count as usize);
-				warn!(target: "linker", "[{block_pos:04X}] UNIMPLEMENTED SmRepeat from {repeat_start:04X}, {repeat_count} times");
+				match repeat_info {
+					Some((pos, counter)) if pos == block_pos => {
+						// repeat, maybe
+						trace!(target: "linker", "[{block_pos:04X}] SmRepeat from {repeat_start:04X}, iteration {counter}/{repeat_count}");
+						if counter < repeat_count {
+							next_block = repeat_start;
+							repeat_info = Some((pos, counter + 1));
+						}
+					}
+					_ => {
+						// start a repeat
+						trace!(target: "linker", "[{block_pos:04X}] SmRepeat from {repeat_start:04X}, iteration 0/{repeat_count}");
+						next_block = repeat_start;
+						repeat_info = Some((block_pos, 1));
+					}
+				}
 			} else if (block & 0xFC00) == 0xA000 {
 				// RelocSetPosition
 				let offset = ((block & 0x3FF) << 16) | (relocs.data[next_block] as u32);
