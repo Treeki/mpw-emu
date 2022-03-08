@@ -10,7 +10,8 @@ pub struct Executable {
 	pub init_vector: u32,
 	pub main_vector: u32,
 	pub shim_addrs: Vec<u32>,
-	pub imports: Vec<pef::ImportedSymbol>
+	pub imports: Vec<pef::ImportedSymbol>,
+	pub libraries: Vec<String>
 }
 
 impl Executable {
@@ -25,7 +26,8 @@ impl Executable {
 			init_vector: 0,
 			main_vector: 0,
 			shim_addrs: Vec::new(),
-			imports: Vec::new()
+			imports: Vec::new(),
+			libraries: Vec::new()
 		}
 	}
 
@@ -117,8 +119,11 @@ impl Executable {
 		for reloc_section in &loader.reloc_sections {
 			self.handle_reloc_section(&loader, reloc_section);
 		}
-		
+
 		self.imports = loader.imported_symbols;
+		for lib in loader.imported_libraries {
+			self.libraries.push(lib.name);
+		}
 	}
 
 	pub fn get_u32(&self, address: u32) -> u32 {

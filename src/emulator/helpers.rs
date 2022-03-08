@@ -16,7 +16,7 @@ impl ArgReader {
 	pub fn new() -> Self {
 		ArgReader {
 			use_pascal_strings: false,
-			gpr_id: RegisterPPC::GPR3.into(),
+			gpr_id: RegisterPPC::R3.into(),
 			va_list_position: 0
 		}
 	}
@@ -63,6 +63,7 @@ impl ArgReader {
 		let e = T5::get_from_reader(self, uc, self.use_pascal_strings)?;
 		Ok((a, b, c, d, e))
 	}
+	#[allow(dead_code)]
 	pub(super) fn read6<T1: ReadableArg, T2: ReadableArg, T3: ReadableArg, T4: ReadableArg, T5: ReadableArg, T6: ReadableArg>(&mut self, uc: &EmuUC) -> UcResult<(T1, T2, T3, T4, T5, T6)> {
 		let a = T1::get_from_reader(self, uc, self.use_pascal_strings)?;
 		let b = T2::get_from_reader(self, uc, self.use_pascal_strings)?;
@@ -81,6 +82,17 @@ impl ArgReader {
 		let f = T6::get_from_reader(self, uc, self.use_pascal_strings)?;
 		let g = T7::get_from_reader(self, uc, self.use_pascal_strings)?;
 		Ok((a, b, c, d, e, f, g))
+	}
+	pub(super) fn read8<T1: ReadableArg, T2: ReadableArg, T3: ReadableArg, T4: ReadableArg, T5: ReadableArg, T6: ReadableArg, T7: ReadableArg, T8: ReadableArg>(&mut self, uc: &EmuUC) -> UcResult<(T1, T2, T3, T4, T5, T6, T7, T8)> {
+		let a = T1::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let b = T2::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let c = T3::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let d = T4::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let e = T5::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let f = T6::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let g = T7::get_from_reader(self, uc, self.use_pascal_strings)?;
+		let h = T8::get_from_reader(self, uc, self.use_pascal_strings)?;
+		Ok((a, b, c, d, e, f, g, h))
 	}
 
 	pub fn read_gpr(&mut self, uc: &EmuUC) -> UcResult<u32> {
@@ -120,6 +132,14 @@ impl ReadableArg for u32 {
 		reader.read_gpr(uc)
 	}
 }
+impl ReadableArg for u64 {
+	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, _pstr_flag: bool) -> UcResult<Self> {
+		// TODO: check this
+		let hi = reader.read_gpr(uc)? as u64;
+		let lo = reader.read_gpr(uc)? as u64;
+		Ok((hi << 32) | lo)
+	}
+}
 impl ReadableArg for i8 {
 	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, _pstr_flag: bool) -> UcResult<Self> {
 		Ok((reader.read_gpr(uc)? & 0xFF) as u8 as i8)
@@ -133,6 +153,14 @@ impl ReadableArg for i16 {
 impl ReadableArg for i32 {
 	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, _pstr_flag: bool) -> UcResult<Self> {
 		Ok(reader.read_gpr(uc)? as i32)
+	}
+}
+impl ReadableArg for i64 {
+	fn get_from_reader(reader: &mut ArgReader, uc: &EmuUC, _pstr_flag: bool) -> UcResult<Self> {
+		// TODO: check this
+		let hi = reader.read_gpr(uc)? as i64;
+		let lo = reader.read_gpr(uc)? as i64;
+		Ok((hi << 32) | lo)
 	}
 }
 impl ReadableArg for FourCC {
@@ -155,18 +183,22 @@ pub trait UnicornExtras {
 	fn read_u8(&self, addr: u32) -> UcResult<u8>;
 	fn read_u16(&self, addr: u32) -> UcResult<u16>;
 	fn read_u32(&self, addr: u32) -> UcResult<u32>;
+	fn read_u64(&self, addr: u32) -> UcResult<u64>;
 	fn read_i8(&self, addr: u32) -> UcResult<i8>;
 	fn read_i16(&self, addr: u32) -> UcResult<i16>;
 	fn read_i32(&self, addr: u32) -> UcResult<i32>;
+	fn read_i64(&self, addr: u32) -> UcResult<i64>;
 	fn read_c_string(&self, addr: u32) -> UcResult<CString>;
 	fn read_pascal_string(&self, addr: u32) -> UcResult<CString>;
 
 	fn write_u8(&mut self, addr: u32, value: u8) -> UcResult<()>;
 	fn write_u16(&mut self, addr: u32, value: u16) -> UcResult<()>;
 	fn write_u32(&mut self, addr: u32, value: u32) -> UcResult<()>;
+	fn write_u64(&mut self, addr: u32, value: u64) -> UcResult<()>;
 	fn write_i8(&mut self, addr: u32, value: i8) -> UcResult<()>;
 	fn write_i16(&mut self, addr: u32, value: i16) -> UcResult<()>;
 	fn write_i32(&mut self, addr: u32, value: i32) -> UcResult<()>;
+	fn write_i64(&mut self, addr: u32, value: i64) -> UcResult<()>;
 	fn write_c_string(&mut self, addr: u32, s: &[u8]) -> UcResult<()>;
 	fn write_pascal_string(&mut self, addr: u32, s: &[u8]) -> UcResult<()>;
 }
@@ -189,6 +221,12 @@ impl<D> UnicornExtras for Unicorn<'_, D> {
 		Ok(u32::from_be_bytes(bytes))
 	}
 
+	fn read_u64(&self, addr: u32) -> UcResult<u64> {
+		let mut bytes = [0u8; 8];
+		self.mem_read(addr as u64, &mut bytes)?;
+		Ok(u64::from_be_bytes(bytes))
+	}
+
 	fn read_i8(&self, addr: u32) -> UcResult<i8> {
 		let mut bytes = [0u8];
 		self.mem_read(addr as u64, &mut bytes)?;
@@ -205,6 +243,12 @@ impl<D> UnicornExtras for Unicorn<'_, D> {
 		let mut bytes = [0u8; 4];
 		self.mem_read(addr as u64, &mut bytes)?;
 		Ok(i32::from_be_bytes(bytes))
+	}
+
+	fn read_i64(&self, addr: u32) -> UcResult<i64> {
+		let mut bytes = [0u8; 8];
+		self.mem_read(addr as u64, &mut bytes)?;
+		Ok(i64::from_be_bytes(bytes))
 	}
 
 	fn read_c_string(&self, mut addr: u32) -> UcResult<CString> {
@@ -243,6 +287,9 @@ impl<D> UnicornExtras for Unicorn<'_, D> {
 	fn write_u32(&mut self, addr: u32, value: u32) -> UcResult<()> {
 		self.mem_write(addr as u64, &value.to_be_bytes())
 	}
+	fn write_u64(&mut self, addr: u32, value: u64) -> UcResult<()> {
+		self.mem_write(addr as u64, &value.to_be_bytes())
+	}
 	fn write_i8(&mut self, addr: u32, value: i8) -> UcResult<()> {
 		self.mem_write(addr as u64, &value.to_be_bytes())
 	}
@@ -250,6 +297,9 @@ impl<D> UnicornExtras for Unicorn<'_, D> {
 		self.mem_write(addr as u64, &value.to_be_bytes())
 	}
 	fn write_i32(&mut self, addr: u32, value: i32) -> UcResult<()> {
+		self.mem_write(addr as u64, &value.to_be_bytes())
+	}
+	fn write_i64(&mut self, addr: u32, value: i64) -> UcResult<()> {
 		self.mem_write(addr as u64, &value.to_be_bytes())
 	}
 

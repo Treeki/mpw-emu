@@ -25,7 +25,13 @@ fn get_resource(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) ->
 	Ok(Some(0))
 }
 
+fn set_res_load(_uc: &mut EmuUC, _state: &mut EmuState, _reader: &mut ArgReader) -> FuncResult {
+	// do nothing here...
+	Ok(Some(0))
+}
+
 pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("GetResource", get_resource);
 	state.install_shim_function("Get1Resource", get_resource);
+	state.install_shim_function("SetResLoad", set_res_load);
 }

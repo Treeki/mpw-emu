@@ -47,6 +47,7 @@ impl SymbolClass {
 
 #[derive(Debug, Clone)]
 pub struct ImportedSymbol {
+	pub library: usize,
 	pub name: String,
 	pub class: SymbolClass,
 	pub weak: bool
@@ -276,7 +277,7 @@ pub fn parse_loader(data: &[u8]) -> binread::BinResult<Loader> {
 
 		let class = SymbolClass::parse((symbol >> 24) & 0xF);
 		let weak = (symbol & 0x80000000) != 0;
-		imported_symbols.push(ImportedSymbol { name, class, weak })
+		imported_symbols.push(ImportedSymbol { library: 0, name, class, weak })
 	}
 
 	let mut imported_libraries: Vec<ImportedLibrary> = Vec::new();
@@ -286,6 +287,12 @@ pub fn parse_loader(data: &[u8]) -> binread::BinResult<Loader> {
 
 		let sym_start = lib.first_imported_symbol as usize;
 		let sym_end = (lib.first_imported_symbol + lib.imported_symbol_count) as usize;
+
+		let index = imported_libraries.len();
+		for sym in &mut imported_symbols[sym_start .. sym_end] {
+			sym.library = index;
+		}
+
 		let imported_symbols = imported_symbols[sym_start .. sym_end].to_vec();
 
 		imported_libraries.push(ImportedLibrary {

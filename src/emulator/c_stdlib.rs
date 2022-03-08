@@ -1,5 +1,7 @@
 use std::ffi::CString;
 
+use unicorn_engine::RegisterPPC;
+
 use super::{EmuState, EmuUC, FuncResult, UcResult, helpers::{ArgReader, UnicornExtras}};
 
 fn atoi(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -157,7 +159,7 @@ fn getenv(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 fn signal(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (sig, func): (i32, u32) = reader.read2(uc)?;
 
-	info!(target: "stdlib", "signal({sig}, {func:08X})");
+	trace!(target: "stdlib", "signal({sig}, {func:08X})");
 
 	// MSL defines SIG_DFL as 0, SIG_IGN as 1 and SIG_ERR as -1
 
@@ -167,9 +169,46 @@ fn signal(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 fn setjmp(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let env: u32 = reader.read1(uc)?;
 
-	info!(target: "stdlib", "setjmp(env={env:08X})");
+	trace!(target: "stdlib", "setjmp(env={env:08X})");
+
+	// hateful, absolutely hateful
+	uc.write_u32(env, uc.reg_read(RegisterPPC::LR)? as u32)?;
+	uc.write_u32(env + 4, uc.reg_read(RegisterPPC::CR)? as u32)?;
+	uc.write_u32(env + 8, uc.reg_read(RegisterPPC::R1)? as u32)?;
+	uc.write_u32(env + 12, uc.reg_read(RegisterPPC::R2)? as u32)?;
+
+	for i in 0..19 {
+		uc.write_u32(env + 20 + (i as u32) * 4, uc.reg_read(RegisterPPC::R13 as i32 + i)? as u32)?;
+	}
+	for i in 0..18 {
+		uc.write_u64(env + 96 + (i as u32) * 8, uc.reg_read(RegisterPPC::FPR14 as i32 + i)?)?;
+	}
+
+	uc.write_u64(env + 240, uc.reg_read(RegisterPPC::FPSCR)?)?;
 
 	Ok(Some(0))
+}
+
+fn longjmp(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (env, val): (u32, i32) = reader.read2(uc)?;
+
+	trace!(target: "stdlib", "longjmp(env={env:08X}, val={val})");
+
+	uc.reg_write(RegisterPPC::LR, uc.read_u32(env)? as u64)?; // LR
+	uc.reg_write(RegisterPPC::CR, uc.read_u32(env + 4)? as u64)?; // CR
+	uc.reg_write(RegisterPPC::R1, uc.read_u32(env + 8)? as u64)?;
+	uc.reg_write(RegisterPPC::R2, uc.read_u32(env + 12)? as u64)?;
+
+	for i in 0..19 {
+		uc.reg_write(RegisterPPC::R13 as i32 + i, uc.read_u32(env + 20 + (i as u32) * 4)? as u64)?;
+	}
+	for i in 0i32..18 {
+		uc.reg_write(RegisterPPC::FPR14 as i32 + i, uc.read_u64(env + 96 + (i as u32) * 8)?)?;
+	}
+
+	uc.reg_write(RegisterPPC::FPSCR, uc.read_u64(env + 240)?)?;
+
+	Ok(Some(if val == 0 { 1 } else { val as u32 }))
 }
 
 pub(super) fn setup_environment(uc: &mut EmuUC, state: &mut EmuState, args: &[String], env_vars: &[(String, String)]) -> UcResult<()> {
@@ -240,4 +279,5 @@ pub(super) fn install_shims(state: &mut EmuState) {
 
 	// ... Same for setjmp.h.
 	state.install_shim_function("__setjmp", setjmp);
+	state.install_shim_function("longjmp", longjmp);
 }

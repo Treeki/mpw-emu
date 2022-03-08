@@ -1,28 +1,68 @@
-use std::{ffi::CString, io::{Write, Seek}};
+use std::{ffi::CString, io::{Write, Read}, rc::Rc, cell::RefCell};
 
-use crate::mac_roman;
+use crate::{mac_roman, filesystem::MacFile};
 
 use super::{EmuState, EmuUC, FuncResult, UcResult, helpers::{ArgReader, UnicornExtras}};
 
-pub enum CFile {
+pub(super) struct FileHandle {
+	file: Rc<RefCell<MacFile>>,
+	position: usize
+}
+
+pub(super) enum CFile {
+	StdIn,
 	StdOut,
 	StdErr,
-	File(std::fs::File)
+	File(FileHandle)
 }
 
 impl CFile {
 	fn is_terminal(&self) -> bool {
 		match self {
-			CFile::StdOut | CFile::StdErr => true,
+			CFile::StdIn | CFile::StdOut | CFile::StdErr => true,
 			_ => false
 		}
 	}
-	
+
+	fn generic_read(&mut self, buffer: &mut [u8]) -> u32 {
+		let read_result = match self {
+			CFile::StdIn => std::io::stdin().read(buffer),
+			CFile::StdOut | CFile::StdErr => return 0,
+			CFile::File(handle) => {
+				let file = handle.file.borrow();
+				let current_pos = handle.position;
+				let new_pos = (handle.position + buffer.len()).min(file.data_fork.len());
+				buffer[0..new_pos - current_pos].copy_from_slice(&file.data_fork[current_pos..new_pos]);
+				handle.position = new_pos;
+				return (new_pos - current_pos) as u32;
+			}
+		};
+
+		match read_result {
+			Ok(amount) => amount as u32,
+			Err(e) => {
+				error!(target: "stdio", "failed to read from file: {e:?}");
+				0
+			}
+		}
+	}
+
 	fn generic_write(&mut self, buffer: &[u8]) -> u32 {
 		let write_result = match self {
+			CFile::StdIn => return 0,
 			CFile::StdOut => std::io::stdout().write(buffer),
 			CFile::StdErr => std::io::stderr().write(buffer),
-			CFile::File(f) => f.write(buffer)
+			CFile::File(handle) => {
+				let mut file = handle.file.borrow_mut();
+				let current_pos = handle.position;
+				let new_pos = handle.position + buffer.len();
+				if new_pos > file.data_fork.len() {
+					file.data_fork.resize(new_pos, 0);
+				}
+				file.data_fork[current_pos..new_pos].copy_from_slice(buffer);
+				handle.position = new_pos;
+				return buffer.len() as u32;
+			}
 		};
 
 		match write_result {
@@ -36,23 +76,19 @@ impl CFile {
 
 	fn tell(&mut self) -> u32 {
 		match self {
-			CFile::File(f) => {
-				match f.stream_position() {
-					Ok(pos) => pos as u32,
-					Err(e) => {
-						error!(target: "stdio", "failed to get position of file");
-						0xFFFFFFFF
-					}
-				}
+			CFile::File(handle) => {
+				handle.position as u32
 			},
 			_ => {
-				warn!(target: "stdio", "running ftell() on stdout or stderr");
+				warn!(target: "stdio", "running ftell() on stdin, stdout or stderr");
 				0xFFFFFFFF
 			}
 		}
 	}
 }
 
+#[allow(unused_variables)]
+#[allow(unused_assignments)]
 fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcResult<Vec<u8>> {
 	let mut output = Vec::new();
 	let mut iter = format.iter();
@@ -74,6 +110,10 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 		let mut plus = false;
 
 		ch = *iter.next().unwrap_or(&0);
+		if ch == b'%' {
+			output.push(ch);
+			continue;
+		}
 
 		// part 1: flags
 		loop {
@@ -154,9 +194,12 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 			}
 			b'X' => {
 				let num: u32 = arg_reader.read1(uc)?;
-				format!("{:X}", num).into_bytes()
+				format!("{:01$X}", num, precision.unwrap_or(0) as usize).into_bytes()
 			}
-			_ => format!("UNIMPLEMENTED!! {}", ch as char).into_bytes()
+			_ => {
+				error!(target: "stdio", "Unimplemented format character: {}", ch as char);
+				format!("?{}", ch as char).into_bytes()
+			}
 		};
 
 		let min_width = min_width.unwrap_or(0) as usize;
@@ -182,12 +225,42 @@ fn fclose(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 
 	if state.stdio_files.contains_key(&file) {
 		state.stdio_files.remove(&file);
+		state.heap.dispose_ptr(uc, file)?;
 		Ok(Some(0))
 	} else {
 		warn!(target: "stdio", "fclose() on invalid file {file:08X}");
 		// TODO: this should be EOF, check what it is in MSL
 		Ok(Some(0xFFFFFFFF))
 	}
+}
+
+fn fopen(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (name, mode): (CString, CString) = reader.read2(uc)?;
+
+	trace!(target: "stdio", "fopen({name:?}, {mode:?})");
+
+	let path = match state.filesystem.resolve_path(0, 0, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "stdio", "fopen failed to resolve path {name:?}: {e:?}");
+			return Ok(Some(0));
+		}
+	};
+
+	let file = match state.filesystem.get_file(&path) {
+		Ok(f) => f,
+		Err(e) => {
+			error!(target: "stdio", "fopen failed to get file {name:?}: {e:?}");
+			return Ok(Some(0));
+		}
+	};
+
+	let ptr = state.heap.new_ptr(uc, 0x18)?;
+	// set _cnt to a negative value so getc() and putc() will always call a hooked function
+	uc.write_u32(ptr, 0xFFFFFFFE)?;
+	state.stdio_files.insert(ptr, CFile::File(FileHandle { file, position: 0 }));
+
+	Ok(Some(ptr))
 }
 
 fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -211,9 +284,9 @@ fn fprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 	}
 }
 
-fn printf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
-	let (file, format): (u32, CString) = reader.read2(uc)?;
-	trace!(target: "stdio", "printf({file:08X}, {format:?}, ...)");
+fn printf(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let format: CString = reader.read1(uc)?;
+	trace!(target: "stdio", "printf({format:?}, ...)");
 	let output = internal_printf(uc, format.as_bytes(), reader)?;
 	Ok(Some(CFile::StdOut.generic_write(&mac_roman::decode_buffer(&output, true))))
 }
@@ -243,6 +316,45 @@ fn vfprintf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Fun
 		}
 		None => {
 			warn!(target: "stdio", "vfprintf() is writing to invalid file {file:08X}");
+			// set errno later?
+			Ok(Some(0))
+		}
+	}
+}
+
+fn fgets(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (ptr, max_size, file): (u32, u32, u32) = reader.read3(uc)?;
+
+	match state.stdio_files.get_mut(&file) {
+		Some(f) => {
+			let mut buffer = Vec::new();
+			let mut byte = [0u8];
+
+			while buffer.len() < (max_size - 1) as usize {
+				if f.generic_read(&mut byte) == 0 {
+					break;
+				}
+				buffer.push(byte[0]);
+				if byte[0] == b'\r' || byte[0] == b'\n' {
+					break;
+				}
+			}
+
+			if buffer.len() == 0 {
+				trace!(target: "stdio", "fgets() reached end");
+				Ok(Some(0))
+			} else {
+				// do we need to handle MacRoman here? probably
+				uc.write_c_string(ptr, &buffer)?;
+
+				let s = CString::new(buffer).unwrap();
+				trace!(target: "stdio", "fgets() returned: [{s:?}]");
+
+				Ok(Some(ptr))
+			}
+		}
+		None => {
+			warn!(target: "stdio", "fgets() is getting from invalid file {file:08X}");
 			// set errno later?
 			Ok(Some(0))
 		}
@@ -304,14 +416,51 @@ fn ftell(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncRe
 	}
 }
 
-fn putchar(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+fn putchar(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let ch: u8 = reader.read1(uc)?;
 	print!("{}", mac_roman::decode_char(ch, true));
 	Ok(Some(ch.into()))
 }
 
+fn filbuf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let file_ptr: u32 = reader.read1(uc)?;
+
+	// set _cnt to a negative value so getc() and putc() will always call a hooked function
+	uc.write_u32(file_ptr, 0xFFFFFFFE)?;
+
+	// get a singular byte
+	let mut byte = [0u8];
+	if let Some(file) = state.stdio_files.get_mut(&file_ptr) {
+		if file.generic_read(&mut byte) == 1 {
+			Ok(Some(byte[0] as u32))
+		} else {
+			Ok(Some(0xFFFFFFFF))
+		}
+	} else {
+		Ok(Some(0))
+	}
+}
+
+fn flsbuf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (ch, file_ptr): (u8, u32) = reader.read2(uc)?;
+
+	// set _cnt to a negative value so getc() and putc() will always call a hooked function
+	uc.write_u32(file_ptr, 0xFFFFFFFE)?;
+
+	// write a singular byte
+	let byte = [ch];
+	if let Some(file) = state.stdio_files.get_mut(&file_ptr) {
+		if file.generic_write(&byte) == 1 {
+			return Ok(Some(byte[0] as u32));
+		}
+	}
+
+	Ok(Some(0xFFFFFFFF))
+}
+
 pub(super) fn install_shims(state: &mut EmuState) {
 	if let Some(iob) = state.get_shim_addr("_iob") {
+		state.stdio_files.insert(iob, CFile::StdIn);
 		state.stdio_files.insert(iob + 0x18, CFile::StdOut);
 		state.stdio_files.insert(iob + 0x30, CFile::StdErr);
 	}
@@ -324,7 +473,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// setvbuf
 	state.install_shim_function("fclose", fclose);
 	// fflush
-	// fopen
+	state.install_shim_function("fopen", fopen);
 	// freopen
 	state.install_shim_function("fprintf", fprintf);
 	// fscanf
@@ -336,7 +485,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// vprintf
 	// vsprintf
 	// fgetc
-	// fgets
+	state.install_shim_function("fgets", fgets);
 	// fputc
 	state.install_shim_function("fputs", fputs);
 	// gets
@@ -357,4 +506,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("putchar", putchar);
 	// feof
 	// ferror
+
+	state.install_shim_function("_filbuf", filbuf);
+	state.install_shim_function("_flsbuf", flsbuf);
 }

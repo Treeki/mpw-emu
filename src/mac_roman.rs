@@ -1,4 +1,6 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
+
+use lazy_static::lazy_static;
 
 const CONVERSIONS: [char; 128] = [
 	'Ä', 'Å', 'Ç', 'É', 'Ñ', 'Ö', 'Ü', 'á', 'à', 'â', 'ä', 'ã', 'å', 'ç', 'é', 'è',
@@ -10,6 +12,16 @@ const CONVERSIONS: [char; 128] = [
 	'‡', '·', '‚', '„', '‰', 'Â', 'Ê', 'Á', 'Ë', 'È', 'Í', 'Î', 'Ï', 'Ì', 'Ó', 'Ô',
 	'\u{F8FF}', 'Ò', 'Ú', 'Û', 'Ù', 'ı', 'ˆ', '˜', '¯', '˘', '˙', '˚', '¸', '˝', '˛', 'ˇ'
 ];
+
+lazy_static! {
+	static ref INVERSE_CONVERSIONS: HashMap<char, u8> = {
+		let mut m = HashMap::new();
+		for i in 0..0x80 {
+			m.insert(CONVERSIONS[i], (i as u8) + 0x80);
+		}
+		m
+	};
+}
 
 pub fn to_lower(ch: u8) -> u8 {
 	match ch {
@@ -119,5 +131,37 @@ pub fn decode_char(ch: u8, cr_to_lf: bool) -> char {
 		ch as char
 	} else {
 		CONVERSIONS[(ch - 0x80) as usize]
+	}
+}
+
+pub fn encode_string(s: &str, lf_to_cr: bool) -> Cow<[u8]> {
+	let mut safe = true;
+	for c in s.chars() {
+		if !c.is_ascii() || (lf_to_cr && c == '\n') {
+			safe = false;
+			break;
+		}
+	}
+
+	if safe {
+		Cow::Borrowed(s.as_bytes())
+	} else {
+		let mut buf = Vec::new();
+
+		for c in s.chars() {
+			buf.push(encode_char(c, lf_to_cr).unwrap_or(0xE0));
+		}
+
+		Cow::Owned(buf)
+	}
+}
+
+pub fn encode_char(ch: char, lf_to_cr: bool) -> Option<u8> {
+	if lf_to_cr && ch == '\n' {
+		Some(b'\r')
+	} else if ch.is_ascii() {
+		Some(ch as u8)
+	} else {
+		INVERSE_CONVERSIONS.get(&ch).cloned()
 	}
 }

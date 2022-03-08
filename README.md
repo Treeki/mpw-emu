@@ -4,8 +4,8 @@ An extremely ridiculous weekend project that tries to do user-mode emulation of 
 
 ## Features
 
-- Loads PEF executables wrapped in MacBinary format
-- Implements enough nonsense to compile object files using MWCPPC from CodeWarrior Pro 1
+- Speaks MacBinary so you can interact with Mac files on Windows
+- Implements enough nonsense to compile object files using MWCPPC from CodeWarrior Pro 1 *and* decompile resources using DeRez!
 - Probably won't destroy your file system
 - It's written in Rust! 🦀
 
@@ -15,11 +15,9 @@ An extremely ridiculous weekend project that tries to do user-mode emulation of 
 - Implement more of the C standard library
   - Figure out a way to make printf better (maybe fork one of the existing Rust implementations)
 - Implement more of the Macintosh Toolbox(tm)
-- Make the file system bridge more robust
-  - Improve detection of type/detector codes
-- Check if I can make loading files more robust
-  - Should I try to support packed formats other than MacBinary?
-  - Using `file/..namedfork/rsrc` might let me load raw files on MacOS
+- Add MacBinary writing so you can save files on Windows
+  - Maybe support AppleDouble as well?
+- Do something more elegant for CR-LF conversion
 - Test whether `#include`ing files works
 - Get more MPW executables working
   - Investigate why some of them aren't PEF files (are these XCOFF?)

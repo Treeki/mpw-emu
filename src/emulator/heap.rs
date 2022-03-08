@@ -159,8 +159,34 @@ impl Heap {
 			Ok(ptr)
 		} else {
 			error!(target: "heap", "Failed to allocate {size} bytes!");
+			self.dump(uc)?;
 			Ok(0)
 		}
+	}
+
+	pub(super) fn dump(&self, uc: &EmuUC) -> UcResult<()> {
+		let mut block = self.first_block;
+		let mut index = 0;
+
+		while block != 0 {
+			let user_size = uc.read_u32(block + HDR_USER_SIZE)?;
+			let block_size = uc.read_u32(block + HDR_BLOCK_SIZE)?;
+			let next = uc.read_u32(block + HDR_NEXT)?;
+			let end = block + block_size;
+			if (user_size & FREE_FLAG) == FREE_FLAG {
+				trace!(target: "heap", "#{index:4} {block:8X}-{end:8X} ---FREE---");
+			} else {
+				trace!(target: "heap", "#{index:4} {block:8X}-{end:8X} U:{user_size:8X}");
+				if block_size <= 0x50 {
+					let data = uc.mem_read_as_vec(block as u64, block_size as usize)?;
+					trace!(target: "heap", "{data:?}");
+				}
+			}
+			index += 1;
+			block = next;
+		}
+
+		Ok(())
 	}
 
 	pub(super) fn dispose_ptr(&mut self, uc: &mut EmuUC, ptr: u32) -> UcResult<()> {

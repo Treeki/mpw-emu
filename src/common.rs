@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, time::SystemTime};
 use binread::BinRead;
 use chrono::{prelude::*, Duration};
 
@@ -12,6 +12,14 @@ pub fn parse_mac_time(time: u32) -> DateTime<Local> {
 
 pub fn get_mac_time(dt: DateTime<Local>) -> u32 {
 	(dt - get_mac_epoch()).num_seconds() as u32
+}
+
+pub fn system_time_to_mac_time(st: SystemTime) -> u32 {
+	if let Ok(diff) = st.duration_since(SystemTime::UNIX_EPOCH) {
+		(diff.as_secs() + 2082844800) as u32
+	} else {
+		0
+	}
 }
 
 #[derive(BinRead, Clone, Copy, Hash, PartialEq, Eq)]
@@ -35,11 +43,18 @@ pub const fn four_cc(what: [u8; 4]) -> FourCC {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(i16)]
+#[allow(dead_code)]
 pub enum OSErr {
+	NoSuchVolume = -35,
 	IOError = -36,
 	BadName = -37,
 	Eof = -39,
+	Position = -40,
 	FileNotFound = -43,
+	FileLocked = -45,
+	FileBusy = -47,
+	DuplicateFilename = -48,
+	Param = -50,
 	RefNum = -51,
 	NotEnoughMemory = -108,
 	DirNotFound = -120,

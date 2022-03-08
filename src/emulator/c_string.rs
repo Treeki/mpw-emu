@@ -30,6 +30,22 @@ fn memcpy(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 	Ok(Some(dst))
 }
 
+fn memmove(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (dst, src, len): (u32, u32, u32) = reader.read3(uc)?;
+	if (src + len) <= dst || src >= (dst + len) {
+		for i in 0..len {
+			uc.write_u8(dst + i, uc.read_u8(src + i)?)?;
+		}
+	} else {
+		// backwards
+		for i in 0..len {
+			let offset = len - 1 - i;
+			uc.write_u8(dst + offset, uc.read_u8(src + offset)?)?;
+		}
+	}
+	Ok(Some(dst))
+}
+
 fn strlen(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let addr: u32 = reader.read1(uc)?;
 	let mut len = 0;
@@ -157,7 +173,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// memchr
 	state.install_shim_function("memcmp", memcmp);
 	state.install_shim_function("memcpy", memcpy);
-	// memmove
+	state.install_shim_function("memmove", memmove);
 
 	state.install_shim_function("strlen", strlen);
 	state.install_shim_function("strcpy", strcpy);
