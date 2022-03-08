@@ -5,6 +5,8 @@ use super::{EmuState, EmuUC, FuncResult, helpers::{ArgReader, UnicornExtras}};
 fn generic_get_ind_string(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader, pascal: bool) -> FuncResult {
 	let (ptr, table_id, mut str_id): (u32, i16, i16) = reader.read3(uc)?;
 
+	trace!(target: "text_utils", "GetIndString(table={table_id}, str={str_id})");
+
 	if let Some(res) = state.resources.get(four_cc(*b"STR#"), table_id) {
 		let mut offset = 2;
 		while offset < res.data.len() && str_id > 1 {
@@ -13,17 +15,28 @@ fn generic_get_ind_string(uc: &mut EmuUC, state: &mut EmuState, reader: &mut Arg
 			offset += 1;
 		}
 
-		let len = res.data[offset] as usize;
-		let s = &res.data[offset + 1 .. offset + len + 1];
-		if pascal {
-			uc.write_pascal_string(ptr, s)?;
-		} else {
-			uc.write_c_string(ptr, s)?;
+		if offset < res.data.len() {
+			let len = res.data[offset] as usize;
+			let s = &res.data[offset + 1 .. offset + len + 1];
+			if pascal {
+				uc.write_pascal_string(ptr, s)?;
+			} else {
+				uc.write_c_string(ptr, s)?;
+			}
+			return Ok(None);
 		}
+
+		warn!(target: "text_utils", "GetIndString failed to find string {str_id} in STR# table {table_id}");
 	} else {
 		warn!(target: "text_utils", "GetIndString failed to find STR# table {table_id}");
 	}
 
+	// write empty string as penance
+	if pascal {
+		uc.write_pascal_string(ptr, b"")?;
+	} else {
+		uc.write_c_string(ptr, b"")?;
+	}
 	Ok(None)
 }
 

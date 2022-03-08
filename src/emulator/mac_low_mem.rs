@@ -18,8 +18,8 @@ fn lm_get_boot_drive(_uc: &mut EmuUC, _state: &mut EmuState, _reader: &mut ArgRe
 	Ok(Some(0))
 }
 
-fn lm_get_mem_err(_uc: &mut EmuUC, _state: &mut EmuState, _reader: &mut ArgReader) -> FuncResult {
-	Ok(Some(0))
+fn lm_get_mem_err(_uc: &mut EmuUC, state: &mut EmuState, _reader: &mut ArgReader) -> FuncResult {
+	Ok(Some(state.mem_error.to_u32()))
 }
 
 pub(super) fn install_shims(state: &mut EmuState) {

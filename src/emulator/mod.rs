@@ -7,7 +7,8 @@ use anyhow::Result;
 use unicorn_engine::{Unicorn, RegisterPPC};
 use unicorn_engine::unicorn_const::{Arch, Mode, Permission};
 
-use crate::common::FourCC;
+use crate::common::{FourCC, OSErr};
+use crate::emulator::helpers::UnicornExtras;
 use crate::{linker, filesystem, pef};
 use crate::resources::Resources;
 
@@ -51,7 +52,8 @@ struct EmuState {
 	next_file_handle: u16,
 	exit_status: Option<i32>,
 	heap: heap::Heap,
-	filesystem: filesystem::FileSystem
+	filesystem: filesystem::FileSystem,
+	mem_error: OSErr
 }
 
 impl EmuState {
@@ -69,7 +71,8 @@ impl EmuState {
 			next_file_handle: 1,
 			exit_status: None,
 			heap: heap::Heap::new(0x30000000, 1024 * 1024 * 32, 512),
-			filesystem: filesystem::FileSystem::new()
+			filesystem: filesystem::FileSystem::new(),
+			mem_error: OSErr::NoError
 		};
 
 		for (import, shim_address) in exe.imports.iter().zip(&exe.shim_addrs) {

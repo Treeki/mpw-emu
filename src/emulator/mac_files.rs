@@ -16,6 +16,16 @@ pub(super) struct FileHandle {
 	fork: Fork
 }
 
+fn nice_error(error: anyhow::Error) -> u32 {
+	if let Some(io) = error.downcast_ref::<std::io::Error>() {
+		if io.kind() == std::io::ErrorKind::NotFound {
+			return OSErr::FileNotFound.to_u32();
+		}
+	}
+
+	OSErr::IOError.to_u32()
+}
+
 fn pb_open_rf_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let pb: u32 = reader.read1(uc)?;
 
@@ -468,7 +478,7 @@ fn fsp_open_df(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> 
 		Ok(f) => f,
 		Err(e) => {
 			error!(target: "files", "FSpOpenDF failed to get file: {e:?}");
-			return Ok(Some(OSErr::IOError.to_u32()))
+			return Ok(Some(nice_error(e)))
 		}
 	};
 
@@ -483,6 +493,36 @@ fn fsp_open_df(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> 
 	info!(target: "files", "... returned handle {handle}");
 	uc.write_u16(ref_num_ptr, handle)?;
 	Ok(Some(0))
+}
+
+fn fsp_create(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (spec_ptr, creator, file_type, script_tag): (u32, FourCC, FourCC, i16) = reader.read4(uc)?;
+	let volume = uc.read_i16(spec_ptr)?;
+	let dir_id = uc.read_i32(spec_ptr + 2)?;
+	let name = uc.read_pascal_string(spec_ptr + 6)?;
+
+	info!(target: "files", "FSpCreate(vol={volume}, dir={dir_id}, name={name:?}, creator={creator:?}, file_type={file_type:?}, script_tag={script_tag})");
+
+	let path = match state.filesystem.resolve_path(volume, dir_id, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "files", "FSpCreate failed to resolve path: {e:?}");
+			return Ok(Some(OSErr::BadName.to_u32()))
+		}
+	};
+
+	if path.exists() {
+		error!(target: "files", "Path already exists for FSpCreate: {path:?}");
+		return Ok(Some(OSErr::DuplicateFilename.to_u32()));
+	}
+
+	match state.filesystem.create_file(&path, creator, file_type) {
+		Ok(()) => Ok(Some(0)),
+		Err(e) => {
+			error!(target: "files", "FSpCreate failed to create file: {e:?}");
+			return Ok(Some(nice_error(e)))
+		}
+	}
 }
 
 fn mpw_make_resolved_path(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -509,19 +549,16 @@ fn mpw_make_resolved_fs_spec(uc: &mut EmuUC, state: &mut EmuState, reader: &mut 
 	trace!(target: "files", "MakeResolvedFSSpec(vol={volume}, dir={dir_id}, name={name:?}, spec={spec_ptr:08X}, ...)");
 
 	let path = state.filesystem.resolve_path(volume, dir_id, name.as_bytes()).unwrap();
-	if path.exists() {
-		// Write a spec
-		let info = state.filesystem.spec(&path).unwrap();
-		uc.write_i16(spec_ptr, info.volume_ref)?;
-		uc.write_i32(spec_ptr + 2, info.parent_id)?;
-		uc.write_pascal_string(spec_ptr + 6, &info.node_name)?;
-		uc.write_u8(is_folder_ptr, if path.is_dir() { 1 } else { 0 })?;
-		uc.write_u8(had_alias_ptr, 0)?;
-		uc.write_u8(leaf_is_alias_ptr, 0)?;
-		Ok(Some(0))
-	} else {
-		Ok(Some(OSErr::FileNotFound.to_u32()))
-	}
+
+	// Write a spec
+	let info = state.filesystem.spec(&path).unwrap();
+	uc.write_i16(spec_ptr, info.volume_ref)?;
+	uc.write_i32(spec_ptr + 2, info.parent_id)?;
+	uc.write_pascal_string(spec_ptr + 6, &info.node_name)?;
+	uc.write_u8(is_folder_ptr, if path.is_dir() { 1 } else { 0 })?;
+	uc.write_u8(had_alias_ptr, 0)?;
+	uc.write_u8(leaf_is_alias_ptr, 0)?;
+	Ok(Some(0))
 }
 
 fn resolve_alias_file(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -574,6 +611,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("HGetFInfo", h_get_f_info);
 	state.install_shim_function("FSMakeFSSpec", fs_make_fs_spec);
 	state.install_shim_function("FSpOpenDF", fsp_open_df);
+	state.install_shim_function("FSpCreate", fsp_create);
 
 	// not actually in Files.h but we'll let it slide.
 	// Aliases.h

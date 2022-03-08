@@ -2,6 +2,14 @@ use std::{fmt, time::SystemTime};
 use binread::BinRead;
 use chrono::{prelude::*, Duration};
 
+pub fn lf_to_cr(buffer: &mut [u8]) {
+	for ch in buffer {
+		if *ch == b'\n' {
+			*ch = b'\r';
+		}
+	}
+}
+
 fn get_mac_epoch() -> DateTime<Local> {
 	Local.ymd(1904, 1, 1).and_hms(0, 0, 0)
 }
@@ -45,6 +53,7 @@ pub const fn four_cc(what: [u8; 4]) -> FourCC {
 #[repr(i16)]
 #[allow(dead_code)]
 pub enum OSErr {
+	NoError = 0,
 	NoSuchVolume = -35,
 	IOError = -36,
 	BadName = -37,
@@ -57,6 +66,7 @@ pub enum OSErr {
 	Param = -50,
 	RefNum = -51,
 	NotEnoughMemory = -108,
+	NilHandle = -109,
 	DirNotFound = -120,
 	GestaltUndefSelector = -5551
 }

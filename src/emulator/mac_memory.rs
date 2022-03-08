@@ -43,7 +43,12 @@ fn dispose_handle(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) 
 
 fn get_handle_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let handle: u32 = reader.read1(uc)?;
-	Ok(Some(state.heap.get_handle_size(uc, handle)?))
+	if let Some(size) = state.heap.get_handle_size(uc, handle)? {
+		Ok(Some(size))
+	} else {
+		state.mem_error = OSErr::NilHandle;
+		Ok(Some(0))
+	}
 }
 
 fn set_handle_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -74,10 +79,20 @@ fn h_get_state(_uc: &mut EmuUC, _state: &mut EmuState, _reader: &mut ArgReader) 
 	Ok(Some(0))
 }
 
+fn block_move(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (src_ptr, dest_ptr, size): (u32, u32, u32) = reader.read3(uc)?;
+
+	for i in 0..size {
+		uc.write_u8(dest_ptr + i, uc.read_u8(src_ptr + i)?)?;
+	}
+
+	Ok(Some(0))
+}
+
 fn ptr_and_hand(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (ptr, handle, size): (u32, u32, u32) = reader.read3(uc)?;
 
-	let current_size = state.heap.get_handle_size(uc, handle)?;
+	let current_size = state.heap.get_handle_size(uc, handle)?.unwrap();
 	if state.heap.set_handle_size(uc, handle, current_size + size)? {
 		let dest = uc.read_u32(handle)? + current_size;
 		for i in 0..size {
@@ -107,5 +122,6 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("BlockMoveData", block_move_data);
 	state.install_shim_function("HGetState", h_get_state);
 	state.install_shim_function("HSetState", stub_return_void);
+	state.install_shim_function("BlockMove", block_move);
 	state.install_shim_function("PtrAndHand", ptr_and_hand);
 }

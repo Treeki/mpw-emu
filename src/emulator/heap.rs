@@ -59,7 +59,7 @@ impl Heap {
 		Ok(())
 	}
 
-	fn get_handle_index_if_valid(&self, handle: u32) -> Option<usize> {
+	fn get_handle_index_if_valid(&self, uc: &EmuUC, handle: u32) -> Option<usize> {
 		if handle >= self.handles_start && handle < (self.handles_start + self.handle_count * 4) {
 			if (handle & 3) == 0 {
 				let handle_index = (handle - self.handles_start) as usize / 4;
@@ -68,6 +68,9 @@ impl Heap {
 				}
 			}
 		}
+
+		let lr = uc.reg_read(unicorn_engine::RegisterPPC::LR).unwrap();
+		error!(target: "heap", "Invalid handle {handle:08X}! LR={lr:08X}");
 		None
 	}
 
@@ -95,7 +98,7 @@ impl Heap {
 	pub(super) fn dispose_handle(&mut self, uc: &mut EmuUC, handle: u32) -> UcResult<()> {
 		if handle == 0 { return Ok(()); }
 
-		let handle_index = self.get_handle_index_if_valid(handle).expect("disposing invalid handle");
+		let handle_index = self.get_handle_index_if_valid(uc, handle).expect("disposing invalid handle");
 		let backing_ptr = uc.read_u32(handle)?;
 		self.dispose_ptr(uc, backing_ptr)?;
 		uc.write_u32(handle, 0)?;
@@ -104,14 +107,17 @@ impl Heap {
 		Ok(())
 	}
 
-	pub(super) fn get_handle_size(&self, uc: &EmuUC, handle: u32) -> UcResult<u32> {
-		let _handle_index = self.get_handle_index_if_valid(handle).expect("getting size of invalid handle");
-		let backing_ptr = uc.read_u32(handle)?;
-		self.get_ptr_size(uc, backing_ptr)
+	pub(super) fn get_handle_size(&self, uc: &EmuUC, handle: u32) -> UcResult<Option<u32>> {
+		if let Some(_handle_index) = self.get_handle_index_if_valid(uc, handle) {
+			let backing_ptr = uc.read_u32(handle)?;
+			Ok(Some(self.get_ptr_size(uc, backing_ptr)?))
+		} else {
+			Ok(None)
+		}
 	}
 
 	pub(super) fn set_handle_size(&mut self, uc: &mut EmuUC, handle: u32, new_size: u32) -> UcResult<bool> {
-		let _handle_index = self.get_handle_index_if_valid(handle).expect("setting size of invalid handle");
+		let _handle_index = self.get_handle_index_if_valid(uc, handle).expect("setting size of invalid handle");
 		let backing_ptr = uc.read_u32(handle)?;
 
 		if self.set_ptr_size(uc, backing_ptr, new_size)? {

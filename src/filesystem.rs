@@ -5,7 +5,7 @@ use bimap::BiHashMap;
 use binread::{BinRead, BinReaderExt};
 use xattr::FileExt;
 
-use crate::{common::{FourCC, four_cc}, macbinary, mac_roman};
+use crate::{common::{FourCC, four_cc, lf_to_cr}, macbinary, mac_roman};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fork {
@@ -127,6 +127,10 @@ impl MacFile {
 				let file_info: FileInfo = cursor.read_be()?;
 				let resource_fork = file.get_xattr("com.apple.ResourceFork")?.unwrap_or_default();
 
+				if file_info.file_type == four_cc(*b"TEXT") {
+					lf_to_cr(&mut data);
+				}
+
 				return Ok(MacFile {
 					path,
 					mode: FileMode::Native,
@@ -160,6 +164,8 @@ impl MacFile {
 		}
 
 		// It's something else entirely, let's just assume text for now
+		lf_to_cr(&mut data);
+
 		Ok(MacFile {
 			path,
 			mode: FileMode::Automatic,
