@@ -108,6 +108,22 @@ fn strcmp(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 	unreachable!()
 }
 
+fn strncmp(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (s1, s2, n): (u32, u32, u32) = reader.read3(uc)?;
+	for i in 0..n {
+		let b1 = uc.read_u8(s1 + i)?;
+		let b2 = uc.read_u8(s2 + i)?;
+		if b1 > b2 {
+			return Ok(Some(1));
+		} else if b1 < b2 {
+			return Ok(Some(0xFFFFFFFF));
+		} else if b1 == 0 {
+			break;
+		}
+	}
+	Ok(Some(0))
+}
+
 fn strchr(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (addr, needle): (u32, u8) = reader.read2(uc)?;
 	for i in 0..u32::MAX {
@@ -181,7 +197,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("strcat", strcat);
 	// strncat
 	state.install_shim_function("strcmp", strcmp);
-	// strncmp
+	state.install_shim_function("strncmp", strncmp);
 	// strcoll
 	// strxfrm
 	state.install_shim_function("strchr", strchr);

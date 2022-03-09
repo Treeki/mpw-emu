@@ -34,6 +34,8 @@ fn update_res_file_internal(uc: &mut EmuUC, state: &mut EmuState, ref_num: u16) 
 fn close_res_file(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let ref_num: u16 = reader.read1(uc)?;
 
+	trace!(target: "resources", "CloseResFile({ref_num})");
+
 	if state.resource_files.contains_key(&ref_num) {
 		state.res_error = OSErr::NoError;
 
@@ -53,6 +55,12 @@ fn close_res_file(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) 
 
 		// stage 3: get rid of the resources
 		state.resource_files.remove(&ref_num);
+
+		if state.active_resource_file == ref_num {
+			// find another one to put in
+			state.active_resource_file = *state.resource_files.keys().max().unwrap();
+			trace!(target: "resources", "Active resource file has been set to {}", state.active_resource_file);
+		}
 	} else {
 		state.res_error = OSErr::ResFileNotFound;
 	}
@@ -91,6 +99,8 @@ fn set_res_load(_uc: &mut EmuUC, _state: &mut EmuState, _reader: &mut ArgReader)
 fn get_resource(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
     let (ty, id): (FourCC, i16) = reader.read2(uc)?;
     let cache_key = (state.active_resource_file, ty, id);
+
+	trace!(target: "resources", "GetResource({ty:?}, {id}) [active file is {}]", state.active_resource_file);
 
 	state.res_error = OSErr::NoError;
 
