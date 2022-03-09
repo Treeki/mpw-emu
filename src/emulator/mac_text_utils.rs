@@ -7,7 +7,9 @@ fn generic_get_ind_string(uc: &mut EmuUC, state: &mut EmuState, reader: &mut Arg
 
 	trace!(target: "text_utils", "GetIndString(table={table_id}, str={str_id})");
 
-	if let Some(res) = state.resources.get(four_cc(*b"STR#"), table_id) {
+	if let Some(res) = state.resource_files.get(&state.active_resource_file).unwrap().get(four_cc(*b"STR#"), table_id) {
+		let res = res.borrow();
+
 		let mut offset = 2;
 		while offset < res.data.len() && str_id > 1 {
 			str_id -= 1;

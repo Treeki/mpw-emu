@@ -68,6 +68,10 @@ pub enum OSErr {
 	NotEnoughMemory = -108,
 	NilHandle = -109,
 	DirNotFound = -120,
+	ResNotFound = -192,
+	ResFileNotFound = -193,
+	AddResFailed = -194,
+	MapRead = -199,
 	GestaltUndefSelector = -5551
 }
 

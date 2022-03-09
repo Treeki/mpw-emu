@@ -1,8 +1,8 @@
 #![feature(int_roundings)]
+
+use std::{rc::Rc, cell::RefCell};
 #[macro_use]
 extern crate log;
-
-use std::rc::Rc;
 
 mod common;
 mod emulator;
@@ -31,12 +31,14 @@ fn main() {
 			return;
 		}
 	};
-	let res = resources::parse_resources(&file.resource_fork).expect("Resource fork loading failed");
 	let pef = pef::read_pef(&file.data_fork).expect("PEF parsing failed");
+
+	let file = Rc::new(RefCell::new(file));
+	let res = resources::parse_resources(file).expect("Resource fork loading failed");
 
 	let mut exe = linker::Executable::new();
 	exe.load_pef(pef);
 
-	let code = emulator::emulate(&exe, Rc::new(res), &args, &env_vars).unwrap();
+	let code = emulator::emulate(&exe, res, &args, &env_vars).unwrap();
 	std::process::exit(code);
 }

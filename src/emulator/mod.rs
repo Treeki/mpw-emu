@@ -4,11 +4,11 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use anyhow::Result;
+use bimap::BiHashMap;
 use unicorn_engine::{Unicorn, RegisterPPC};
 use unicorn_engine::unicorn_const::{Arch, Mode, Permission};
 
 use crate::common::{FourCC, OSErr};
-use crate::emulator::helpers::UnicornExtras;
 use crate::{linker, filesystem, pef};
 use crate::resources::Resources;
 
@@ -43,8 +43,10 @@ struct EmuState {
 	start_time: Instant,
 	imports: Vec<ShimSymbol>,
 	dummy_cursor_handle: Option<u32>,
-	resources: Rc<Resources>,
-	loaded_resources: HashMap<(FourCC, i16), u32>,
+	resource_files: HashMap<u16, Resources>,
+	active_resource_file: u16,
+	next_resource_file: u16,
+	loaded_resources: BiHashMap<(u16, FourCC, i16), u32>,
 	env_var_map: HashMap<String, u32>,
 	strtok_state: u32,
 	stdio_files: HashMap<u32, c_stdio::CFile>,
@@ -53,27 +55,33 @@ struct EmuState {
 	exit_status: Option<i32>,
 	heap: heap::Heap,
 	filesystem: filesystem::FileSystem,
-	mem_error: OSErr
+	mem_error: OSErr,
+	res_error: OSErr
 }
 
 impl EmuState {
-	fn new(exe: &linker::Executable, resources: Rc<Resources>) -> Self {
+	fn new(exe: &linker::Executable, resources: Resources) -> Self {
 		let mut state = EmuState {
 			start_time: Instant::now(),
 			imports: Vec::new(),
 			dummy_cursor_handle: None,
-			resources,
-			loaded_resources: HashMap::new(),
+			resource_files: HashMap::new(),
+			active_resource_file: 3,
+			next_resource_file: 4,
+			loaded_resources: BiHashMap::new(),
 			env_var_map: HashMap::new(),
 			strtok_state: 0,
 			stdio_files: HashMap::new(),
 			file_handles: HashMap::new(),
-			next_file_handle: 1,
+			next_file_handle: 4,
 			exit_status: None,
 			heap: heap::Heap::new(0x30000000, 1024 * 1024 * 32, 512),
 			filesystem: filesystem::FileSystem::new(),
-			mem_error: OSErr::NoError
+			mem_error: OSErr::NoError,
+			res_error: OSErr::NoError
 		};
+
+		state.resource_files.insert(state.active_resource_file, resources);
 
 		for (import, shim_address) in exe.imports.iter().zip(&exe.shim_addrs) {
 			if import.class == pef::SymbolClass::Data {
@@ -171,7 +179,7 @@ fn dump_context(uc: &EmuUC) {
 	println!("  R07: {:08x} / R15: {:08x} / R23: {:08x} / R31: {:08x}", uc.reg_read(RegisterPPC::R7).unwrap(), uc.reg_read(RegisterPPC::R15).unwrap(), uc.reg_read(RegisterPPC::R23).unwrap(), uc.reg_read(RegisterPPC::R31).unwrap());
 }
 
-pub fn emulate(exe: &linker::Executable, resources: Rc<Resources>, args: &[String], env_vars: &[(String, String)]) -> UcResult<i32> {
+pub fn emulate(exe: &linker::Executable, resources: Resources, args: &[String], env_vars: &[(String, String)]) -> UcResult<i32> {
 	let state = Rc::new(RefCell::new(EmuState::new(exe, resources)));
 	let mut uc = Unicorn::new_with_data(Arch::PPC, Mode::BIG_ENDIAN | Mode::PPC32, Rc::clone(&state))?;
 

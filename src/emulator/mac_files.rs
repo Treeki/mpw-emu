@@ -65,6 +65,54 @@ fn pb_open_rf_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader)
 	Ok(Some(0))
 }
 
+fn pb_write_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let pb: u32 = reader.read1(uc)?;
+
+	let ref_num = uc.read_u16(pb + 0x18)?;
+	let buffer_ptr = uc.read_u32(pb + 0x20)?;
+	let req_count = uc.read_u32(pb + 0x24)?;
+	let pos_mode = uc.read_i16(pb + 0x2C)?;
+	let pos_offset = uc.read_i32(pb + 0x2E)?;
+	let mut result = OSErr::NoError;
+
+	// this is nasty
+	info!(target: "files", "PBWriteSync(ref={ref_num}, buffer={buffer_ptr:08X}, req_count={req_count:X}, pos_mode={pos_mode}, pos_offset={pos_offset:X})");
+
+	if let Some(handle) = state.file_handles.get_mut(&ref_num) {
+		let mut file = handle.file.borrow_mut();
+		file.set_dirty();
+
+		// work out the new position
+		let buffer = file.get_fork_mut(handle.fork);
+		let write_start = match pos_mode & 3 {
+			1 => pos_offset as isize,
+			2 => (buffer.len() as isize + pos_offset as isize),
+			3 => (handle.position as isize + pos_offset as isize),
+			_ => handle.position as isize
+		};
+		if write_start >= 0 {
+			let write_start = write_start as usize;
+			let write_end = write_start + req_count as usize;
+			if buffer.len() < write_end {
+				buffer.resize(write_end, 0);
+			}
+
+			uc.mem_read(buffer_ptr.into(), &mut buffer[write_start..write_end])?;
+			handle.position = write_end;
+
+			uc.write_u32(pb + 0x28, req_count)?; // we always write the full amount
+			uc.write_u32(pb + 0x2E, write_end as u32)?;
+		} else {
+			result = OSErr::Position;
+		}
+	} else {
+		result = OSErr::RefNum;
+	}
+
+	uc.write_i16(pb + 0x10, result as i16)?;
+	Ok(Some(0))
+}
+
 fn fs_close(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let ref_num: u16 = reader.read1(uc)?;
 
@@ -184,6 +232,17 @@ fn get_eof(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Func
 	}
 }
 
+fn set_eof(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (ref_num, eof): (u16, u32) = reader.read2(uc)?;
+
+	if let Some(handle) = state.file_handles.get_mut(&ref_num) {
+		handle.file.borrow_mut().get_fork_mut(handle.fork).resize(eof as usize, 0);
+		Ok(Some(0))
+	} else {
+		Ok(Some(OSErr::RefNum.to_u32()))
+	}
+}
+
 fn get_f_pos(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (ref_num, pos_ptr): (u16, u32) = reader.read2(uc)?;
 
@@ -262,6 +321,45 @@ fn pb_get_cat_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgRe
 	}
 }
 
+fn pb_h_open_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let pb: u32 = reader.read1(uc)?;
+
+	// this is HParamBlockRec (HFileParam)
+	let name = uc.read_pascal_string(uc.read_u32(pb + 0x12)?)?;
+	let volume_ref = uc.read_i16(pb + 0x16)?;
+	let dir_id = uc.read_i32(pb + 0x30)?;
+	trace!(target: "files", "PBHOpenSync(vol={volume_ref}, dir={dir_id}, name={name:?})");
+
+	let path = match state.filesystem.resolve_path(volume_ref, dir_id, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "files", "PBHOpenSync failed to resolve path: {e:?}");
+			return Ok(Some(OSErr::BadName.to_u32()));
+		}
+	};
+
+	let file = match state.filesystem.get_file(&path) {
+		Ok(f) => f,
+		Err(e) => {
+			error!(target: "files", "PBHOpenSync failed to get file: {e:?}");
+			return Ok(Some(OSErr::IOError.to_u32()))
+		}
+	};
+
+	let handle = state.next_file_handle;
+	state.next_file_handle += 1;
+	state.file_handles.insert(handle, FileHandle {
+		file,
+		fork: Fork::Data,
+		position: 0
+	});
+
+	info!(target: "files", "... returned handle {handle}");
+	uc.write_u16(pb + 0x18, handle)?;
+
+	Ok(Some(0))
+}
+
 fn pb_h_get_f_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	// https://web.archive.org/web/20011122050640/http://developer.apple.com/techpubs/mac/Files/Files-240.html#HEADING240-0
 	let pb: u32 = reader.read1(uc)?;
@@ -280,21 +378,38 @@ fn pb_h_get_f_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgRe
 
 		let path = match state.filesystem.resolve_path(volume_ref, dir_id, name.as_bytes()) {
 			Ok(p) => p,
-			Err(_) => {
-				// this should be better, really
-				return Ok(Some(OSErr::FileNotFound.to_u32()));
+			Err(e) => {
+				error!(target: "files", "PBHGetFInfoSync failed to resolve path: {e:?}");
+				return Ok(Some(nice_error(e)));
 			}
 		};
 
-		let metadata = match std::fs::metadata(path) {
+		let metadata = match std::fs::metadata(&path) {
 			Ok(m) => m,
-			Err(_) => {
-				return Ok(Some(OSErr::FileNotFound.to_u32()));
+			Err(e) => {
+				error!(target: "files", "PBHGetFInfoSync failed to get metadata: {e:?}");
+				return Ok(Some(OSErr::IOError.to_u32()));
 			}
 		};
+
+		let file = match state.filesystem.get_file(&path) {
+			Ok(f) => f,
+			Err(e) => {
+				error!(target: "files", "PBHGetFInfoSync failed to get file: {e:?}");
+				return Ok(Some(nice_error(e)))
+			}
+		};
+		let file = file.borrow();
 
 		// I should probably write more of this data...
 		uc.write_u8(pb + 0x1E, if metadata.is_dir() { ATTRIB_DIRECTORY } else { 0 })?;
+		uc.write_u32(pb + 0x20, file.file_info.file_type.0)?;
+		uc.write_u32(pb + 0x24, file.file_info.file_creator.0)?;
+		uc.write_u16(pb + 0x28, file.file_info.finder_flags)?;
+		uc.write_i16(pb + 0x2A, file.file_info.location.0)?;
+		uc.write_i16(pb + 0x2C, file.file_info.location.1)?;
+		uc.write_u16(pb + 0x2E, file.file_info.reserved_field)?;
+
 		if let Ok(time) = metadata.created() {
 			uc.write_u32(pb + 0x48, system_time_to_mac_time(time))?;
 		}
@@ -303,6 +418,51 @@ fn pb_h_get_f_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgRe
 		}
 
 		Ok(Some(0))
+	}
+}
+
+fn pb_h_set_f_info_sync(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let pb: u32 = reader.read1(uc)?;
+
+	// this is HParamBlockRec (HFileParam)
+	let name = uc.read_pascal_string(uc.read_u32(pb + 0x12)?)?;
+	let volume_ref = uc.read_i16(pb + 0x16)?;
+	let dir_id = uc.read_i32(pb + 0x30)?;
+	trace!(target: "files", "PBHSetFInfoSync is updating dir {dir_id}, name {name:?}");
+
+	let path = match state.filesystem.resolve_path(volume_ref, dir_id, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "files", "PBHSetFInfoSync failed to resolve path: {e:?}");
+			return Ok(Some(nice_error(e)));
+		}
+	};
+
+	let file = match state.filesystem.get_file(&path) {
+		Ok(f) => f,
+		Err(e) => {
+			error!(target: "files", "PBHSetFInfoSync failed to get file: {e:?}");
+			return Ok(Some(nice_error(e)))
+		}
+	};
+
+	// we don't support setting the metadata times here
+	// (use the 'filetime' crate?)
+	let mut file_ref = file.borrow_mut();
+	file_ref.file_info.file_type.0 = uc.read_u32(pb + 0x20)?;
+	file_ref.file_info.file_creator.0 = uc.read_u32(pb + 0x24)?;
+	file_ref.file_info.finder_flags = uc.read_u16(pb + 0x28)?;
+	file_ref.file_info.location.0 = uc.read_i16(pb + 0x2A)?;
+	file_ref.file_info.location.1 = uc.read_i16(pb + 0x2C)?;
+	file_ref.file_info.reserved_field = uc.read_u16(pb + 0x2E)?;
+
+	file_ref.set_dirty();
+	match file_ref.save_if_dirty() {
+		Ok(()) => Ok(Some(0)),
+		Err(e) => {
+			error!(target: "files", "PBHSetFInfoSync failed to save file: {e:?}");
+			Ok(Some(nice_error(e)))
+		}
 	}
 }
 
@@ -421,7 +581,7 @@ fn h_get_f_info(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) ->
 		Ok(f) => f,
 		Err(e) => {
 			error!(target: "files", "HOpen failed to get file: {e:?}");
-			return Ok(Some(OSErr::IOError.to_u32()))
+			return Ok(Some(nice_error(e)))
 		}
 	};
 
@@ -525,6 +685,84 @@ fn fsp_create(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> F
 	}
 }
 
+fn fsp_delete(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let spec_ptr: u32 = reader.read1(uc)?;
+	let volume = uc.read_i16(spec_ptr)?;
+	let dir_id = uc.read_i32(spec_ptr + 2)?;
+	let name = uc.read_pascal_string(spec_ptr + 6)?;
+
+	info!(target: "files", "FSpDelete(vol={volume}, dir={dir_id}, name={name:?})");
+
+	let path = match state.filesystem.resolve_path(volume, dir_id, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "files", "FSpDelete failed to resolve path: {e:?}");
+			return Ok(Some(OSErr::BadName.to_u32()))
+		}
+	};
+
+	// temporary safety check
+	let ok_to_delete = match path.extension() {
+		Some(e) => e.to_string_lossy() == "o",
+		None => false
+	};
+
+	if !ok_to_delete {
+		error!(target: "files", "FSpDelete is protecting against a delete of: {path:?}");
+		return Ok(Some(OSErr::FileLocked.to_u32()));
+	}
+
+	// is this file open at all?
+	for handle in state.file_handles.values() {
+		if handle.file.borrow().path == path {
+			error!(target: "files", "FSpDelete cannot delete open file: {path:?}");
+			return Ok(Some(OSErr::FileBusy.to_u32()));
+		}
+	}
+
+	match state.filesystem.delete_file(&path) {
+		Ok(()) => Ok(Some(0)),
+		Err(e) => {
+			error!(target: "files", "FSpDelete failed to delete file: {e:?}");
+			return Ok(Some(nice_error(e)))
+		}
+	}
+}
+
+fn fsp_get_f_info(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (spec_ptr, info_ptr): (u32, u32) = reader.read2(uc)?;
+	let volume = uc.read_i16(spec_ptr)?;
+	let dir_id = uc.read_i32(spec_ptr + 2)?;
+	let name = uc.read_pascal_string(spec_ptr + 6)?;
+
+	info!(target: "files", "FSpGetFInfo(vol={volume}, dir={dir_id}, name={name:?})");
+
+	let path = match state.filesystem.resolve_path(volume, dir_id, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "files", "FSpGetFInfo failed to resolve path: {e:?}");
+			return Ok(Some(OSErr::BadName.to_u32()))
+		}
+	};
+
+	let file = match state.filesystem.get_file(&path) {
+		Ok(f) => f,
+		Err(e) => {
+			error!(target: "files", "FSpGetFInfo failed to get file: {e:?}");
+			return Ok(Some(nice_error(e)))
+		}
+	};
+
+	let f = file.borrow();
+	uc.write_u32(info_ptr, f.file_info.file_type.0)?;
+	uc.write_u32(info_ptr + 4, f.file_info.file_creator.0)?;
+	uc.write_u16(info_ptr + 8, f.file_info.finder_flags)?;
+	uc.write_i16(info_ptr + 10, f.file_info.location.0)?;
+	uc.write_i16(info_ptr + 12, f.file_info.location.1)?;
+	uc.write_u16(info_ptr + 14, 0)?; // fdFldr - do I need this? maybe.
+	Ok(Some(0))
+}
+
 fn mpw_make_resolved_path(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (volume, dir_id, path, resolve_leaf_name, buffer_ptr, is_folder_ptr, had_alias_ptr, leaf_is_alias_ptr): (i16, i32, CString, bool, u32, u32, u32, u32) = reader.pstr().read8(uc)?;
 	trace!(target: "files", "MakeResolvedPath(vol={volume}, dir={dir_id}, path={path:?}, resolve_leaf_name={resolve_leaf_name}, buffer={buffer_ptr:08X}, ...)");
@@ -595,16 +833,19 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("PBOpenRFSync", pb_open_rf_sync);
 	// PBCloseSync
 	// PBReadSync
+	state.install_shim_function("PBWriteSync", pb_write_sync);
 	state.install_shim_function("FSClose", fs_close);
 	state.install_shim_function("FSRead", fs_read);
 	state.install_shim_function("FSWrite", fs_write);
 	state.install_shim_function("GetVInfo", get_v_info);
 	state.install_shim_function("GetEOF", get_eof);
+	state.install_shim_function("SetEOF", set_eof);
 	state.install_shim_function("GetFPos", get_f_pos);
 	state.install_shim_function("SetFPos", set_f_pos);
 	state.install_shim_function("PBGetCatInfoSync", pb_get_cat_info_sync);
-	// PBHOpenSync
+	state.install_shim_function("PBHOpenSync", pb_h_open_sync);
 	state.install_shim_function("PBHGetFInfoSync", pb_h_get_f_info_sync);
+	state.install_shim_function("PBHSetFInfoSync", pb_h_set_f_info_sync);
 	state.install_shim_function("HOpen", h_open);
 	state.install_shim_function("HCreate", h_create);
 	state.install_shim_function("HDelete", h_delete);
@@ -612,6 +853,8 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("FSMakeFSSpec", fs_make_fs_spec);
 	state.install_shim_function("FSpOpenDF", fsp_open_df);
 	state.install_shim_function("FSpCreate", fsp_create);
+	state.install_shim_function("FSpDelete", fsp_delete);
+	state.install_shim_function("FSpGetFInfo", fsp_get_f_info);
 
 	// not actually in Files.h but we'll let it slide.
 	// Aliases.h

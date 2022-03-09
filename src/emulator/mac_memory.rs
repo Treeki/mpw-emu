@@ -6,37 +6,50 @@ fn stub_return_void(_uc: &mut EmuUC, _state: &mut EmuState, _reader: &mut ArgRea
 	Ok(None)
 }
 
+fn mem_error(_uc: &mut EmuUC, state: &mut EmuState, _reader: &mut ArgReader) -> FuncResult {
+	Ok(Some(state.mem_error.to_u32()))
+}
+
 fn new_handle(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let size: u32 = reader.read1(uc)?;
 	let handle = state.heap.new_handle(uc, size)?;
+	state.mem_error = if handle == 0 { OSErr::NotEnoughMemory } else { OSErr::NoError };
 	Ok(Some(handle))
 }
 
 fn new_ptr(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let size: u32 = reader.read1(uc)?;
 	let ptr = state.heap.new_ptr(uc, size)?;
+	state.mem_error = if ptr == 0 { OSErr::NotEnoughMemory } else { OSErr::NoError };
 	Ok(Some(ptr))
 }
 
 fn dispose_ptr(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let ptr: u32 = reader.read1(uc)?;
+	state.mem_error = OSErr::NoError;
 	state.heap.dispose_ptr(uc, ptr)?;
 	Ok(None)
 }
 
 fn get_ptr_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let ptr: u32 = reader.read1(uc)?;
+	state.mem_error = OSErr::NoError;
 	Ok(Some(state.heap.get_ptr_size(uc, ptr)?))
 }
 
 fn set_ptr_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (ptr, new_size): (u32, u32) = reader.read2(uc)?;
-	state.heap.set_ptr_size(uc, ptr, new_size)?;
+	if state.heap.set_ptr_size(uc, ptr, new_size)? {
+		state.mem_error = OSErr::NoError;
+	} else {
+		state.mem_error = OSErr::NotEnoughMemory;
+	}
 	Ok(None)
 }
 
 fn dispose_handle(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let handle: u32 = reader.read1(uc)?;
+	state.mem_error = OSErr::NoError;
 	state.heap.dispose_handle(uc, handle)?;
 	Ok(None)
 }
@@ -44,6 +57,7 @@ fn dispose_handle(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) 
 fn get_handle_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let handle: u32 = reader.read1(uc)?;
 	if let Some(size) = state.heap.get_handle_size(uc, handle)? {
+		state.mem_error = OSErr::NoError;
 		Ok(Some(size))
 	} else {
 		state.mem_error = OSErr::NilHandle;
@@ -53,7 +67,11 @@ fn get_handle_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader)
 
 fn set_handle_size(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (handle, new_size): (u32, u32) = reader.read2(uc)?;
-	state.heap.set_handle_size(uc, handle, new_size)?;
+	if state.heap.set_handle_size(uc, handle, new_size)? {
+		state.mem_error = OSErr::NoError;
+	} else {
+		state.mem_error = OSErr::NotEnoughMemory;
+	}
 	Ok(None)
 }
 
@@ -105,6 +123,7 @@ fn ptr_and_hand(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) ->
 }
 
 pub(super) fn install_shims(state: &mut EmuState) {
+	state.install_shim_function("MemError", mem_error);
 	state.install_shim_function("NewHandle", new_handle);
 	state.install_shim_function("NewHandleClear", new_handle);
 	state.install_shim_function("NewPtr", new_ptr);
