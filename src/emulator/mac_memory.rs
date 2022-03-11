@@ -10,6 +10,13 @@ fn mem_error(_uc: &mut EmuUC, state: &mut EmuState, _reader: &mut ArgReader) -> 
 	Ok(Some(state.mem_error.to_u32()))
 }
 
+fn temp_new_handle(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let size: u32 = reader.read1(uc)?;
+	trace!("ignoring TempNewHandle({size})");
+	state.mem_error = OSErr::NotEnoughMemory;
+	Ok(Some(0))
+}
+
 fn new_handle(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let size: u32 = reader.read1(uc)?;
 	let handle = state.heap.new_handle(uc, size)?;
@@ -143,4 +150,6 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("HSetState", stub_return_void);
 	state.install_shim_function("BlockMove", block_move);
 	state.install_shim_function("PtrAndHand", ptr_and_hand);
+
+	state.install_shim_function("TempNewHandle", temp_new_handle);
 }

@@ -499,6 +499,39 @@ fn h_open(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 	Ok(Some(0))
 }
 
+fn h_open_rf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (volume, dir_id, name, permission, ref_num_ptr): (i16, i32, CString, i8, u32) = reader.pstr().read5(uc)?;
+	info!(target: "files", "HOpenRF(vol={volume}, dir={dir_id}, name={name:?}, permission={permission})");
+
+	let path = match state.filesystem.resolve_path(volume, dir_id, name.as_bytes()) {
+		Ok(p) => p,
+		Err(e) => {
+			error!(target: "files", "HOpenRF failed to resolve path: {e:?}");
+			return Ok(Some(OSErr::BadName.to_u32()))
+		}
+	};
+
+	let file = match state.filesystem.get_file(&path) {
+		Ok(f) => f,
+		Err(e) => {
+			error!(target: "files", "HOpenRF failed to get file: {e:?}");
+			return Ok(Some(OSErr::IOError.to_u32()))
+		}
+	};
+
+	let handle = state.next_file_handle;
+	state.next_file_handle += 1;
+	state.file_handles.insert(handle, FileHandle {
+		file,
+		fork: Fork::Resource,
+		position: 0
+	});
+
+	info!(target: "files", "... returned handle {handle}");
+	uc.write_u16(ref_num_ptr, handle)?;
+	Ok(Some(0))
+}
+
 fn h_create(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (volume_ref, dir_id, name, creator, file_type): (i16, i32, CString, FourCC, FourCC) = reader.pstr().read5(uc)?;
 	info!(target: "files", "HCreate(vol={volume_ref}, dir={dir_id}, name={name:?}, creator={creator:?}, type={file_type:?})");
@@ -847,6 +880,8 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("PBHGetFInfoSync", pb_h_get_f_info_sync);
 	state.install_shim_function("PBHSetFInfoSync", pb_h_set_f_info_sync);
 	state.install_shim_function("HOpen", h_open);
+	state.install_shim_function("HOpenDF", h_open);
+	state.install_shim_function("HOpenRF", h_open_rf);
 	state.install_shim_function("HCreate", h_create);
 	state.install_shim_function("HDelete", h_delete);
 	state.install_shim_function("HGetFInfo", h_get_f_info);
