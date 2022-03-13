@@ -1,6 +1,7 @@
 use std::io;
 
 use binread::{BinRead, BinResult, BinReaderExt};
+use num::Integer;
 
 #[derive(BinRead, Debug)]
 #[br(big)]
@@ -47,8 +48,8 @@ pub fn probe(file: &[u8]) -> bool {
 		return false;
 	}
 
-	let data_size = u32::from_be_bytes(file[0x53 .. 0x57].try_into().unwrap()).next_multiple_of(0x80);
-	let resource_size = u32::from_be_bytes(file[0x57 .. 0x5B].try_into().unwrap()).next_multiple_of(0x80);
+	let data_size = u32::from_be_bytes(file[0x53 .. 0x57].try_into().unwrap()).next_multiple_of(&0x80);
+	let resource_size = u32::from_be_bytes(file[0x57 .. 0x5B].try_into().unwrap()).next_multiple_of(&0x80);
 	let expected_size = 0x80 + data_size as usize + resource_size as usize;
 	trace!(target: "macbinary", "probe: data_size={data_size:X} resource_size={resource_size:X} expected_size={expected_size:X}");
 

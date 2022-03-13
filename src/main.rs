@@ -1,5 +1,3 @@
-#![feature(int_roundings)]
-
 use std::{rc::Rc, cell::RefCell};
 #[macro_use]
 extern crate log;

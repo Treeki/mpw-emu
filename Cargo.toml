@@ -14,6 +14,7 @@ chrono = "0.4.19"
 env_logger = "0.9.0"
 lazy_static = "1.4.0"
 log = "0.4.14"
+num = "0.4.0"
 # update me once CR bug is fixed.
 unicorn-engine = { git = "https://github.com/unicorn-engine/unicorn", branch = "dev" }
 xattr = "0.2.2"
