@@ -16,5 +16,5 @@ lazy_static = "1.4.0"
 log = "0.4.14"
 num = "0.4.0"
 # update me once CR bug is fixed.
-unicorn-engine = { git = "https://github.com/unicorn-engine/unicorn", branch = "dev" }
+unicorn-engine = { git = "https://github.com/unicorn-engine/unicorn", branch = "dev", features = ["use_system_unicorn"] }
 xattr = "0.2.2"
