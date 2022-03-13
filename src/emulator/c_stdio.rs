@@ -127,7 +127,7 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 			}
 			ch = *iter.next().unwrap_or(&0);
 		}
-		
+
 		// part 2: minimum width
 		let mut min_width = None;
 		if ch == b'*' {
@@ -135,7 +135,7 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 			ch = *iter.next().unwrap_or(&0);
 		} else {
 			while (b'1'..b'9').contains(&ch) || (ch == b'0' && min_width.is_some()) {
-				let digit = (ch - b'0') as u32;
+				let digit = (ch - b'0') as i32;
 				min_width = Some(min_width.unwrap_or(0) * 10 + digit);
 
 				ch = *iter.next().unwrap_or(&0);
@@ -153,7 +153,7 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 				ch = *iter.next().unwrap_or(&0);
 			} else {
 				while (b'0'..b'9').contains(&ch) {
-					let digit = (ch - b'0') as u32;
+					let digit = (ch - b'0') as i32;
 					precision = Some(precision.unwrap() * 10 + digit);
 					ch = *iter.next().unwrap_or(&0);
 				}
@@ -202,8 +202,9 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 			}
 		};
 
-		let min_width = min_width.unwrap_or(0) as usize;
-		let padding = min_width.max(what.len()) - what.len();
+		let what_len = what.len() as isize;
+		let min_width = min_width.unwrap_or(0) as isize;
+		let padding = min_width.max(what_len) - what_len;
 		if !negative {
 			for _ in 0..padding {
 				output.push(if zero_pad { b'0' } else { b' ' });
@@ -220,6 +221,12 @@ fn internal_printf(uc: &EmuUC, format: &[u8], arg_reader: &mut ArgReader) -> UcR
 	Ok(output)
 }
 
+fn setvbuf(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (file, buf_ptr, mode, size): (u32, u32, i32, u32) = reader.read4(uc)?;
+	trace!(target: "stdio", "setvbuf(file={file:08X}, buf={buf_ptr:08x}, mode={mode}, size={size}");
+	Ok(Some(0)) // pretend we did something. (we didn't)
+}
+
 fn fclose(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let file: u32 = reader.read1(uc)?;
 
@@ -229,6 +236,19 @@ fn fclose(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 		Ok(Some(0))
 	} else {
 		warn!(target: "stdio", "fclose() on invalid file {file:08X}");
+		// TODO: this should be EOF, check what it is in MSL
+		Ok(Some(0xFFFFFFFF))
+	}
+}
+
+fn fflush(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let file: u32 = reader.read1(uc)?;
+
+	if state.stdio_files.contains_key(&file) {
+		// pretend we did something
+		Ok(Some(0))
+	} else {
+		warn!(target: "stdio", "fflush() on invalid file {file:08X}");
 		// TODO: this should be EOF, check what it is in MSL
 		Ok(Some(0xFFFFFFFF))
 	}
@@ -470,9 +490,9 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// tmpnam
 	// tmpfile
 	// setbuf
-	// setvbuf
+	state.install_shim_function("setvbuf", setvbuf);
 	state.install_shim_function("fclose", fclose);
-	// fflush
+	state.install_shim_function("fflush", fflush);
 	state.install_shim_function("fopen", fopen);
 	// freopen
 	state.install_shim_function("fprintf", fprintf);

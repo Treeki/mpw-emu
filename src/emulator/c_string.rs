@@ -151,6 +151,20 @@ fn strrchr(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Fun
 	Ok(Some(best))
 }
 
+fn strspn(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (ptr, sep): (u32, CString) = reader.read2(uc)?;
+	if ptr == 0 { return Ok(Some(0)); }
+
+	for i in 0..u32::MAX {
+		let ch = uc.read_u8(ptr + i)?;
+		if ch == 0 || !sep.as_bytes().contains(&ch) {
+			return Ok(Some(i));
+		}
+	}
+
+	unreachable!()
+}
+
 fn strtok(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let (mut ptr, sep): (u32, CString) = reader.read2(uc)?;
 	if ptr == 0 {
@@ -203,7 +217,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("strchr", strchr);
 	state.install_shim_function("strrchr", strrchr);
 	// strpbrk
-	// strspn
+	state.install_shim_function("strspn", strspn);
 	// strcspn
 	state.install_shim_function("strtok", strtok);
 	// strstr

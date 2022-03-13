@@ -13,12 +13,15 @@ use crate::{linker, filesystem, pef};
 use crate::resources::Resources;
 
 mod c_ctype;
+mod c_fenv;
 mod c_stdio;
 mod c_stdlib;
 mod c_string;
+mod c_time;
 mod heap;
 mod helpers;
 mod mac_files;
+mod mac_fp;
 mod mac_gestalt;
 mod mac_low_mem;
 mod mac_memory;
@@ -128,7 +131,7 @@ fn intr_hook(uc: &mut EmuUC, _number: u32) {
 	let rtoc = uc.reg_read(RegisterPPC::R2).unwrap();
 	let lr = uc.reg_read(RegisterPPC::LR).unwrap();
 	let pc = uc.pc_read().unwrap();
-	
+
 	let state = Rc::clone(uc.get_data());
 	let mut state = state.borrow_mut();
 
@@ -210,10 +213,13 @@ pub fn emulate(exe: &linker::Executable, resources: Resources, args: &[String], 
 
 		// inject shim functions
 		c_ctype::install_shims(&mut uc, &mut state)?;
+		c_fenv::install_shims(&mut state);
 		c_stdio::install_shims(&mut state);
-		c_stdlib::install_shims(&mut state);
+		c_stdlib::install_shims(&mut uc, &mut state)?;
 		c_string::install_shims(&mut state);
+		c_time::install_shims(&mut state);
 		mac_files::install_shims(&mut state);
+		mac_fp::install_shims(&mut state);
 		mac_gestalt::install_shims(&mut state);
 		mac_low_mem::install_shims(&mut state);
 		mac_memory::install_shims(&mut state);

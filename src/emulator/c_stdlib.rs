@@ -4,6 +4,104 @@ use unicorn_engine::RegisterPPC;
 
 use super::{EmuState, EmuUC, FuncResult, UcResult, helpers::{ArgReader, UnicornExtras}};
 
+const QSORT_CODE: &[u32] = &[
+	// Offset 0
+	0x7C0802A6, // mflr     r0
+	0x90010008, // stw      r0,8(SP)
+	0x9421FFC0, // stwu     SP,-64(SP)
+	0x7C882378, // mr       r8,r4
+	0x7CA42B78, // mr       r4,r5
+	0x7CC73378, // mr       r7,r6
+	0x38C8FFFF, // subi     r6,r8,1
+	0x38A00000, // li       r5,0
+	0x48000015, // bl       ._qsort (+0x14)
+	0x80010048, // lwz      r0,72(SP)
+	0x38210040, // addi     SP,SP,64
+	0x7C0803A6, // mtlr     r0
+	0x4E800020, // blr
+	// Offset 0x34
+	0x7C0802A6, // mflr     r0
+	0xBEE1FFDC, // stmw     r23,-36(SP)
+	0x90010008, // stw      r0,8(SP)
+	0x9421FFA0, // stwu     SP,-96(SP)
+	0x7C7B1B78, // mr       r27,r3
+	0x7C9C2378, // mr       r28,r4
+	0x7CBD2B78, // mr       r29,r5
+	0x7CDE3378, // mr       r30,r6
+	0x7CFF3B78, // mr       r31,r7
+	0x2C1D0000, // cmpwi    r29,0
+	0x3B1DFFFF, // subi     r24,r29,1
+	0x418000E8, // blt      *+232
+	0x7C1DF000, // cmpw     r29,r30
+	0x408000E0, // bge      *+224
+	0x7FB7EB78, // mr       r23,r29
+	0x7F5EE1D6, // mullw    r26,r30,r28
+	0x48000060, // b        *+96
+	0x7F37E1D6, // mullw    r25,r23,r28
+	0x7FECFB78, // mr       r12,r31
+	0x7C7BCA14, // add      r3,r27,r25
+	0x7C9BD214, // add      r4,r27,r26
+	0x480000D5, // bl       .__ptr_glue (+0xD4)
+	0x80410014, // lwz      r2,20(SP)
+	0x2C030000, // cmpwi    r3,0
+	0x4181003C, // bgt      *+60
+	0x3B180001, // addi     r24,r24,1
+	0x7C18E1D6, // mullw    r0,r24,r28
+	0x7CDB0214, // add      r6,r27,r0
+	0x7CBBCA14, // add      r5,r27,r25
+	0x38600000, // li       r3,0
+	0x7F8903A6, // mtctr    r28
+	0x281C0000, // cmplwi   r28,$0000
+	0x4081001C, // ble      *+28
+	0x7C8618AE, // lbzx     r4,r6,r3
+	0x7C0518AE, // lbzx     r0,r5,r3
+	0x7C0619AE, // stbx     r0,r6,r3
+	0x7C8519AE, // stbx     r4,r5,r3
+	0x38630001, // addi     r3,r3,1
+	0x4200FFEC, // bdnz     *-20
+	0x3AF70001, // addi     r23,r23,1
+	0x7C17F040, // cmplw    r23,r30
+	0x4180FFA0, // blt      *-96
+	0x3B180001, // addi     r24,r24,1
+	0x7C78E1D6, // mullw    r3,r24,r28
+	0x7C1EE1D6, // mullw    r0,r30,r28
+	0x7CDB1A14, // add      r6,r27,r3
+	0x7CBB0214, // add      r5,r27,r0
+	0x38600000, // li       r3,0
+	0x7F8903A6, // mtctr    r28
+	0x281C0000, // cmplwi   r28,$0000
+	0x4081001C, // ble      *+28
+	0x7C8618AE, // lbzx     r4,r6,r3
+	0x7C0518AE, // lbzx     r0,r5,r3
+	0x7C0619AE, // stbx     r0,r6,r3
+	0x7C8519AE, // stbx     r4,r5,r3
+	0x38630001, // addi     r3,r3,1
+	0x4200FFEC, // bdnz     *-20
+	0x7F63DB78, // mr       r3,r27
+	0x7F84E378, // mr       r4,r28
+	0x7FA5EB78, // mr       r5,r29
+	0x7FE7FB78, // mr       r7,r31
+	0x38D8FFFF, // subi     r6,r24,1
+	0x4BFFFF09, // bl       ._qsort (-0xF8)
+	0x7F63DB78, // mr       r3,r27
+	0x7F84E378, // mr       r4,r28
+	0x7FC6F378, // mr       r6,r30
+	0x7FE7FB78, // mr       r7,r31
+	0x38B80001, // addi     r5,r24,1
+	0x4BFFFEF1, // bl       ._qsort (-0x110)
+	0x80010068, // lwz      r0,104(SP)
+	0x38210060, // addi     SP,SP,96
+	0x7C0803A6, // mtlr     r0
+	0xBAE1FFDC, // lmw      r23,-36(SP)
+	0x4E800020, // blr
+	// Offset 0x15C
+	0x800C0000, // lwz      r0,0(r12)
+	0x90410014, // stw      r2,20(SP)
+	0x7C0903A6, // mtctr    r0
+	0x804C0004, // lwz      r2,0(r12)
+	0x4E800420, // bctr
+];
+
 fn atoi(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
 	let s: CString = reader.read1(uc)?;
 	if let Ok(s) = s.into_string() {
@@ -69,7 +167,7 @@ fn strtol(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> Func
 	while i < s.len() && is_digit_for_base(s[i], base) {
 		num = num.wrapping_mul(base.into()).wrapping_add(digit_to_num(s[i]).into());
 	}
-	
+
 	if negative {
 		num = -num;
 	}
@@ -154,6 +252,11 @@ fn getenv(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 	}
 
 	Ok(Some(0))
+}
+
+fn abs(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let value: u32 = reader.read1(uc)?;
+	Ok(Some((value as i32).unsigned_abs()))
 }
 
 fn signal(uc: &mut EmuUC, _state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
@@ -241,7 +344,7 @@ pub(super) fn setup_environment(uc: &mut EmuUC, state: &mut EmuState, args: &[St
 	Ok(())
 }
 
-pub(super) fn install_shims(state: &mut EmuState) {
+pub(super) fn install_shims(uc: &mut EmuUC, state: &mut EmuState) -> UcResult<()> {
 	// atof
 	state.install_shim_function("atoi", atoi);
 	state.install_shim_function("atol", atoi);
@@ -262,8 +365,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("getenv", getenv);
 	// system
 	// bsearch
-	// qsort
-	// abs
+	state.install_shim_function("abs", abs);
 	// labs
 	// div
 	// ldiv
@@ -280,4 +382,16 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	// ... Same for setjmp.h.
 	state.install_shim_function("__setjmp", setjmp);
 	state.install_shim_function("longjmp", longjmp);
+
+	// qsort() needs special handling.
+	// We implement it in PowerPC so it can invoke a callback function
+	if let Some(qsort) = state.get_shim_addr("qsort") {
+		let qsort_code = state.heap.new_ptr(uc, (QSORT_CODE.len() * 4) as u32)?;
+		uc.write_u32(qsort, qsort_code)?;
+		for (i, insn) in QSORT_CODE.iter().enumerate() {
+			uc.write_u32(qsort_code + 4 * (i as u32), *insn)?;
+		}
+	}
+
+	Ok(())
 }

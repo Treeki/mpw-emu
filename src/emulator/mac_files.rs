@@ -592,6 +592,13 @@ fn h_delete(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> Fun
 	match state.filesystem.delete_file(&path) {
 		Ok(()) => Ok(Some(0)),
 		Err(e) => {
+			if let Some(e) = e.downcast_ref::<std::io::Error>() {
+				if e.kind() == std::io::ErrorKind::NotFound {
+					// MWCPPC calls this on files that don't exist, so let's be quiet
+					info!(target: "files", "HDelete failed to delete non-existent file: {e:?}");
+					return Ok(Some(OSErr::FileNotFound.to_u32()));
+				}
+			}
 			error!(target: "files", "HDelete failed to delete file: {e:?}");
 			Ok(Some(OSErr::IOError.to_u32()))
 		}
