@@ -324,7 +324,7 @@ pub(super) fn setup_environment(uc: &mut EmuUC, state: &mut EmuState, args: &[St
 	}
 
 	// Arguments
-	if let Some(int_env) = state.get_shim_addr("_IntEnv") {
+	if let Some(int_env) = state.get_shim_addr(uc, "_IntEnv")? {
 		debug!(target: "stdlib", "_IntEnv ptr is at: {int_env:08X}");
 
 		let argv = state.heap.new_ptr(uc, (args.len() * 4) as u32)?;
@@ -339,6 +339,13 @@ pub(super) fn setup_environment(uc: &mut EmuUC, state: &mut EmuState, args: &[St
 			uc.write_u32(argv + (i as u32) * 4, arg_ptr)?;
 			uc.write_c_string(arg_ptr, arg.as_bytes())?;
 		}
+	}
+
+	// Special setjmp
+	if let Some(target_for_exit) = state.get_shim_addr(uc, "__target_for_exit")? {
+		// we're ok to ignore this for now
+		// we just need the extra space allocated at this location
+		debug!(target: "stdlib", "__target_for_exit ptr is at {target_for_exit:08X}");
 	}
 
 	Ok(())
@@ -385,7 +392,7 @@ pub(super) fn install_shims(uc: &mut EmuUC, state: &mut EmuState) -> UcResult<()
 
 	// qsort() needs special handling.
 	// We implement it in PowerPC so it can invoke a callback function
-	if let Some(qsort) = state.get_shim_addr("qsort") {
+	if let Some(qsort) = state.get_shim_addr(uc, "qsort")? {
 		let qsort_code = state.heap.new_ptr(uc, (QSORT_CODE.len() * 4) as u32)?;
 		uc.write_u32(qsort, qsort_code)?;
 		for (i, insn) in QSORT_CODE.iter().enumerate() {

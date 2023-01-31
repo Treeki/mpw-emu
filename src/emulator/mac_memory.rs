@@ -129,6 +129,23 @@ fn ptr_and_hand(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) ->
 	}
 }
 
+fn hand_and_hand(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncResult {
+	let (hand1, hand2): (u32, u32) = reader.read2(uc)?;
+
+	let src_size = state.heap.get_handle_size(uc, hand1)?.unwrap();
+	let dest_size = state.heap.get_handle_size(uc, hand2)?.unwrap();
+	if state.heap.set_handle_size(uc, hand2, dest_size + src_size)? {
+		let src = uc.read_u32(hand1)?;
+		let dest = uc.read_u32(hand2)? + dest_size;
+		for i in 0..src_size {
+			uc.write_u8(dest + i, uc.read_u8(src + i)?)?;
+		}
+		Ok(Some(0))
+	} else {
+		Ok(Some(OSErr::NotEnoughMemory.to_u32()))
+	}
+}
+
 pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("MemError", mem_error);
 	state.install_shim_function("NewHandle", new_handle);
@@ -150,6 +167,7 @@ pub(super) fn install_shims(state: &mut EmuState) {
 	state.install_shim_function("HSetState", stub_return_void);
 	state.install_shim_function("BlockMove", block_move);
 	state.install_shim_function("PtrAndHand", ptr_and_hand);
+	state.install_shim_function("HandAndHand", hand_and_hand);
 
 	state.install_shim_function("TempNewHandle", temp_new_handle);
 }

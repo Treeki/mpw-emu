@@ -17,14 +17,14 @@ pub(super) enum CFile {
 }
 
 impl CFile {
-	fn is_terminal(&self) -> bool {
+	pub(super) fn is_terminal(&self) -> bool {
 		match self {
 			CFile::StdIn | CFile::StdOut | CFile::StdErr => true,
 			_ => false
 		}
 	}
 
-	fn generic_read(&mut self, buffer: &mut [u8]) -> u32 {
+	pub(super) fn generic_read(&mut self, buffer: &mut [u8]) -> u32 {
 		let read_result = match self {
 			CFile::StdIn => std::io::stdin().read(buffer),
 			CFile::StdOut | CFile::StdErr => return 0,
@@ -47,7 +47,7 @@ impl CFile {
 		}
 	}
 
-	fn generic_write(&mut self, buffer: &[u8]) -> u32 {
+	pub(super) fn generic_write(&mut self, buffer: &[u8]) -> u32 {
 		let write_result = match self {
 			CFile::StdIn => return 0,
 			CFile::StdOut => std::io::stdout().write(buffer),
@@ -74,7 +74,7 @@ impl CFile {
 		}
 	}
 
-	fn tell(&mut self) -> u32 {
+	pub(super) fn tell(&mut self) -> u32 {
 		match self {
 			CFile::File(handle) => {
 				handle.position as u32
@@ -478,11 +478,16 @@ fn flsbuf(uc: &mut EmuUC, state: &mut EmuState, reader: &mut ArgReader) -> FuncR
 	Ok(Some(0xFFFFFFFF))
 }
 
-pub(super) fn install_shims(state: &mut EmuState) {
-	if let Some(iob) = state.get_shim_addr("_iob") {
+pub(super) fn install_shims(uc: &mut EmuUC, state: &mut EmuState) -> UcResult<()> {
+	if let Some(iob) = state.get_shim_addr(uc, "_iob")? {
 		state.stdio_files.insert(iob, CFile::StdIn);
 		state.stdio_files.insert(iob + 0x18, CFile::StdOut);
 		state.stdio_files.insert(iob + 0x30, CFile::StdErr);
+
+		// for stuff using write(), etc
+		state.stdio_files.insert(0, CFile::StdIn);
+		state.stdio_files.insert(1, CFile::StdOut);
+		state.stdio_files.insert(2, CFile::StdErr);
 	}
 
 	// remove
@@ -529,4 +534,6 @@ pub(super) fn install_shims(state: &mut EmuState) {
 
 	state.install_shim_function("_filbuf", filbuf);
 	state.install_shim_function("_flsbuf", flsbuf);
+
+	Ok(())
 }

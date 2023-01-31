@@ -9,6 +9,7 @@ pub struct Executable {
 	pub stack_size: u32,
 	pub init_vector: u32,
 	pub main_vector: u32,
+	pub sc_thunk_addr: u32,
 	pub shim_addrs: Vec<u32>,
 	pub imports: Vec<pef::ImportedSymbol>,
 	pub libraries: Vec<String>
@@ -25,6 +26,7 @@ impl Executable {
 			stack_size: 0,
 			init_vector: 0,
 			main_vector: 0,
+			sc_thunk_addr: 0,
 			shim_addrs: Vec::new(),
 			imports: Vec::new(),
 			libraries: Vec::new()
@@ -86,7 +88,7 @@ impl Executable {
 		}
 
 		// Create shims for imported symbols
-		let sc_thunk = self.memory_end_addr();
+		self.sc_thunk_addr = self.memory_end_addr();
 		self.memory.push(0x44);
 		self.memory.push(0);
 		self.memory.push(0);
@@ -103,9 +105,10 @@ impl Executable {
 		for (i, sym) in loader.imported_symbols.iter().enumerate() {
 			match sym.class {
 				pef::SymbolClass::TVect => {
-					let shim = self.allocate_memory(8);
-					self.set_u32(shim, sc_thunk);
+					let shim = self.allocate_memory(12);
+					self.set_u32(shim, self.sc_thunk_addr);
 					self.set_u32(shim + 4, i as u32);
+					self.set_u32(shim + 8, 100);
 					self.shim_addrs.push(shim);
 				}
 				pef::SymbolClass::Data => {

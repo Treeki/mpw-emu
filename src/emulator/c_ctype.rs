@@ -35,7 +35,7 @@ pub(super) fn install_shims(uc: &mut EmuUC, state: &mut EmuState) -> UcResult<()
 	state.install_shim_function("tolower", tolower);
 	state.install_shim_function("toupper", toupper);
 
-	if let Some(p_ctype) = state.get_shim_addr("__p_CType") {
+	if let Some(p_ctype) = state.get_shim_addr(uc, "__p_CType")? {
 		debug!(target: "c_ctype", "__p_CType ptr is at: {p_ctype:08X}");
 
 		// The linker gives us 1024 bytes of free space in each symbol,

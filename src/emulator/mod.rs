@@ -6,10 +6,11 @@ use std::time::Instant;
 use anyhow::Result;
 use bimap::BiHashMap;
 use unicorn_engine::{Unicorn, RegisterPPC};
-use unicorn_engine::unicorn_const::{Arch, Mode, Permission};
+use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 
 use crate::common::{FourCC, OSErr};
 use crate::{linker, filesystem, pef};
+use crate::emulator::helpers::UnicornExtras;
 use crate::resources::Resources;
 
 mod c_ctype;
@@ -18,8 +19,10 @@ mod c_stdio;
 mod c_stdlib;
 mod c_string;
 mod c_time;
+mod flex_lm;
 mod heap;
 mod helpers;
+mod interface_lib;
 mod mac_files;
 mod mac_fp;
 mod mac_gestalt;
@@ -29,6 +32,7 @@ mod mac_os_utils;
 mod mac_quickdraw;
 mod mac_resources;
 mod mac_text_utils;
+mod std_c_lib;
 
 type UcResult<T> = Result<T, unicorn_engine::unicorn_const::uc_error>;
 
@@ -44,6 +48,11 @@ struct ShimSymbol {
 
 struct EmuState {
 	start_time: Instant,
+	hle_functions: HashMap<String, LibraryShim>,
+	dyn_stubs: HashMap<String, u32>,
+	dyn_functions: Vec<LibraryShim>,
+	missing_dyn_functions: Vec<(String, String)>,
+	sc_thunk_addr: u32,
 	imports: Vec<ShimSymbol>,
 	dummy_cursor_handle: Option<u32>,
 	resource_files: HashMap<u16, Resources>,
@@ -55,6 +64,8 @@ struct EmuState {
 	stdio_files: HashMap<u32, c_stdio::CFile>,
 	file_handles: HashMap<u16, mac_files::FileHandle>,
 	next_file_handle: u16,
+	next_checkout: u32,
+	checkouts: HashMap<u32, flex_lm::Checkout>,
 	exit_status: Option<i32>,
 	heap: heap::Heap,
 	filesystem: filesystem::FileSystem,
@@ -66,6 +77,11 @@ impl EmuState {
 	fn new(exe: &linker::Executable, resources: Resources) -> Self {
 		let mut state = EmuState {
 			start_time: Instant::now(),
+			hle_functions: HashMap::new(),
+			dyn_stubs: HashMap::new(),
+			dyn_functions: Vec::new(),
+			missing_dyn_functions: Vec::new(),
+			sc_thunk_addr: exe.sc_thunk_addr,
 			imports: Vec::new(),
 			dummy_cursor_handle: None,
 			resource_files: HashMap::new(),
@@ -77,6 +93,8 @@ impl EmuState {
 			stdio_files: HashMap::new(),
 			file_handles: HashMap::new(),
 			next_file_handle: 4,
+			next_checkout: 0x10000000,
+			checkouts: HashMap::new(),
 			exit_status: None,
 			heap: heap::Heap::new(0x30000000, 1024 * 1024 * 32, 512),
 			filesystem: filesystem::FileSystem::new(),
@@ -103,13 +121,17 @@ impl EmuState {
 		state
 	}
 
-	fn get_shim_addr(&self, name: &str) -> Option<u32> {
+	fn get_shim_addr(&mut self, uc: &mut EmuUC, name: &str) -> UcResult<Option<u32>> {
 		for import in &self.imports {
 			if import.name == name {
-				return Some(import.shim_address);
+				return Ok(Some(import.shim_address));
 			}
 		}
-		None
+
+		// just allocate some space
+		let addr = self.heap.new_ptr(uc, 0x1000)?;
+		self.dyn_stubs.insert(String::from(name), addr);
+		Ok(Some(addr))
 	}
 
 	fn install_shim_function(&mut self, name: &str, func: LibraryShim) {
@@ -118,6 +140,35 @@ impl EmuState {
 				import.func = Some(func);
 			}
 		}
+
+		self.hle_functions.insert(String::from(name), func);
+	}
+
+	fn find_stub(&mut self, uc: &mut EmuUC, lib_name: &str, func_name: &str) -> UcResult<u32> {
+		if let Some(stub) = self.dyn_stubs.get(func_name) {
+			return Ok(*stub);
+		}
+
+		let stub = self.heap.new_ptr(uc, 12)?;
+		uc.write_u32(stub.into(), self.sc_thunk_addr)?;
+		self.dyn_stubs.insert(String::from(func_name), stub);
+
+		if let Some(func) = self.hle_functions.get(func_name) {
+			let id = self.dyn_functions.len() as u32;
+			uc.write_u32((stub + 4).into(), id)?;
+			uc.write_u32((stub + 8).into(), 101)?;
+
+			self.dyn_functions.push(*func);
+		} else {
+			warn!("Executable dynamically imports missing function from {lib_name}: {func_name}");
+			let id = self.missing_dyn_functions.len() as u32;
+			uc.write_u32((stub + 4).into(), id)?;
+			uc.write_u32((stub + 8).into(), 404)?;
+
+			self.missing_dyn_functions.push((String::from(lib_name), String::from(func_name)));
+		}
+
+		Ok(stub)
 	}
 }
 
@@ -128,9 +179,11 @@ fn code_hook(_uc: &mut EmuUC, _addr: u64, _size: u32) {
 }
 
 fn intr_hook(uc: &mut EmuUC, _number: u32) {
+	let tvect = uc.reg_read(RegisterPPC::R12).unwrap();
 	let rtoc = uc.reg_read(RegisterPPC::R2).unwrap();
 	let lr = uc.reg_read(RegisterPPC::LR).unwrap();
 	let pc = uc.pc_read().unwrap();
+	let code = uc.read_u32((tvect + 8) as u32).unwrap();
 
 	let state = Rc::clone(uc.get_data());
 	let mut state = state.borrow_mut();
@@ -142,8 +195,29 @@ fn intr_hook(uc: &mut EmuUC, _number: u32) {
 		return;
 	}
 
-	match state.imports[rtoc as usize].func {
-		Some(func) => {
+	match code {
+		100 => match state.imports[rtoc as usize].func {
+			Some(func) => {
+				let mut arg_reader = helpers::ArgReader::new();
+				match func(uc, &mut state, &mut arg_reader) {
+					Ok(Some(result)) => uc.reg_write(RegisterPPC::R3, result.into()).unwrap(),
+					Ok(None) => {},
+					Err(e) => {
+						error!(target: "emulator", "Error {e:?} while executing {} (lr={lr:08x})", state.imports[rtoc as usize].name);
+					}
+				}
+			}
+			None => {
+				error!(
+					target: "emulator",
+					"Unimplemented call to {}::{} @{lr:08X}",
+					state.imports[rtoc as usize].library_name,
+					state.imports[rtoc as usize].name
+				);
+			}
+		}
+		101 => {
+			let func = state.dyn_functions[rtoc as usize];
 			let mut arg_reader = helpers::ArgReader::new();
 			match func(uc, &mut state, &mut arg_reader) {
 				Ok(Some(result)) => uc.reg_write(RegisterPPC::R3, result.into()).unwrap(),
@@ -153,14 +227,18 @@ fn intr_hook(uc: &mut EmuUC, _number: u32) {
 				}
 			}
 		}
-		None => {
+		404 => {
 			error!(
-				target: "emulator",
-				"Unimplemented call to {}::{} @{lr:08X}",
-				state.imports[rtoc as usize].library_name,
-				state.imports[rtoc as usize].name
-			);
+					target: "emulator",
+					"Unimplemented dynamic call to {}::{} @{lr:08X}",
+					state.missing_dyn_functions[rtoc as usize].0,
+					state.missing_dyn_functions[rtoc as usize].1
+				);
 		}
+		_ => error!(
+			target: "emulator",
+			"Unknown code in hooked transition vector: {code} (at {tvect:08X})"
+		)
 	}
 
 	// NOTE: next unicorn will not need this i think?
@@ -214,10 +292,12 @@ pub fn emulate(exe: &linker::Executable, resources: Resources, args: &[String], 
 		// inject shim functions
 		c_ctype::install_shims(&mut uc, &mut state)?;
 		c_fenv::install_shims(&mut state);
-		c_stdio::install_shims(&mut state);
+		c_stdio::install_shims(&mut uc, &mut state)?;
 		c_stdlib::install_shims(&mut uc, &mut state)?;
 		c_string::install_shims(&mut state);
 		c_time::install_shims(&mut state);
+		flex_lm::install_shims(&mut state);
+		interface_lib::install_shims(&mut state);
 		mac_files::install_shims(&mut state);
 		mac_fp::install_shims(&mut state);
 		mac_gestalt::install_shims(&mut state);
@@ -227,6 +307,7 @@ pub fn emulate(exe: &linker::Executable, resources: Resources, args: &[String], 
 		mac_quickdraw::install_shims(&mut state);
 		mac_resources::install_shims(&mut state);
 		mac_text_utils::install_shims(&mut state);
+		std_c_lib::install_shims(&mut state);
 
 		for symbol in &state.imports {
 			if symbol.func.is_none() && symbol.class == pef::SymbolClass::TVect {

@@ -372,6 +372,8 @@ impl FileSystem {
 	}
 
 	pub fn get_directory_by_id(&self, volume_ref: VolumeRef, dir_id: DirID) -> Result<PathBuf> {
+		let volume_ref = if volume_ref == 0 { self.default_volume } else { volume_ref };
+
 		if let Some(path) = self.nodes.get_by_left(&(volume_ref, dir_id)) {
 			Ok(path.clone())
 		} else {
