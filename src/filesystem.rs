@@ -341,6 +341,15 @@ impl FileSystem {
 				self.volumes.insert(volume_ref, volume.clone());
 				self.next_volume_ref -= 1;
 				Ok(volume)
+			}
+			else if cfg!(unix) && name == "Root" {
+				let volume = Volume::Root;
+				let volume_ref = self.next_volume_ref;
+				debug!(target: "fs", "Registered volume {volume_ref} to be {volume:?} ({name})");
+				self.volume_names.insert(volume_ref, name.into_owned());
+				self.volumes.insert(volume_ref, volume.clone());
+				self.next_volume_ref -= 1;
+				Ok(volume)
 			} else {
 				Err(anyhow!("could not resolve volume"))
 			}
