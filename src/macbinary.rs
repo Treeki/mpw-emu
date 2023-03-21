@@ -1,8 +1,15 @@
 use std::io;
 
-use binread::{BinRead, BinResult, BinReaderExt};
+use crc::{Crc, CRC_16_XMODEM};
+use binread::{BinRead, BinReaderExt, BinResult};
 use num::Integer;
 
+/// MacBinary header
+///
+/// 128-byte MacBinary header. The header has the same size on MacBinary I, II, and III. There
+/// are some unused portions which were given meaning in later versions.
+///
+/// <https://web.archive.org/web/20050305044255/http://www.lazerware.com/formats/macbinary/macbinary_iii.html>
 #[derive(BinRead, Debug)]
 #[br(big)]
 struct Header {
@@ -43,6 +50,20 @@ pub struct File {
 }
 
 // Determine whether a file looks like a valid MacBinary file
+//
+// > To determine if a header is a valid MacBinary header, first take advantage of the new
+// > MacBinary III signature located at offset 102. If it matches, then you know that this is a
+// > valid MacBinary III header and can continue as such including the restoration of the new
+// > extended Finder info.
+// >
+// > If it is not a MacBinary III header, start by checking bytes 0 and 74 - they should both be
+// > zero. If they are both zero, either (a) the CRC should match, which means it is a MacBinary II
+// > file, or (b) byte 82 is zero, which means it may be a MacBinary I file. (Note that, at the
+// > current version level, byte 82 is kept zero to maintain compatibility with MacBinary I. If at
+// > some point the MacBinary versions change sufficiently that it is necessary to keep MacBinary I
+// > programs from downloading these files, we can change byte 82 to non-zero.)
+//
+// -- <https://web.archive.org/web/20050305044255/http://www.lazerware.com/formats/macbinary/macbinary_iii.html>
 pub fn probe(file: &[u8]) -> bool {
 	if file.len() < 0x80 {
 		return false;
@@ -53,7 +74,15 @@ pub fn probe(file: &[u8]) -> bool {
 	let expected_size = 0x80 + data_size as usize + resource_size as usize;
 	trace!(target: "macbinary", "probe: data_size={data_size:X} resource_size={resource_size:X} expected_size={expected_size:X}");
 
-	file[0x66..0x6A] == *b"mBIN" && file.len() == expected_size
+	if file[0x66..0x6A] == *b"mBIN" && file.len() == expected_size {
+		// MacBinary III
+		return true;
+	}
+
+	// Maybe MacBinary II, check CRC
+	file[0] == 0
+		&& file[74] == 0
+		&& u16::from_be_bytes(file[124..][..2].try_into().unwrap()) == crc(&file[..124])
 }
 
 pub fn unpack(file: &[u8]) -> BinResult<File> {
@@ -84,4 +113,9 @@ pub fn unpack(file: &[u8]) -> BinResult<File> {
 		data,
 		resource
 	})
+}
+
+fn crc(file: &[u8]) -> u16 {
+	let crc: Crc<u16> = Crc::<u16>::new(&CRC_16_XMODEM);
+	crc.checksum(file)
 }
